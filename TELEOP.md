@@ -22,7 +22,7 @@
 
 ## 2. 参考 `joycon-robotics` 后补的控制点
 
-原工程 `projects/joycon-robotics/joyconrobotics.py` 里有几件事做得比早期
+早期参考实现 `joycon-robotics/joyconrobotics.py` 里有几件事做得比早期
 `robot_toolkit.teleop` 完整：
 
 1. **陀螺仪校准与偏航重置**
@@ -81,22 +81,20 @@
 
 ```powershell
 # Piper X，真机；急停放手边
-python -m projects.robot_toolkit.examples.joycon_teleop --robot piper_x --yes
+python -m robot_toolkit.examples.joycon_teleop --robot piper_x --yes
 
 # UR5e
-python -m projects.robot_toolkit.examples.joycon_teleop --robot ur_rtde --ip 192.168.1.10 --yes
+python -m robot_toolkit.examples.joycon_teleop --robot ur_rtde --ip 192.168.1.10 --yes
 
 # 不接硬件，检查 runner/映射
-python -m projects.robot_toolkit.examples.joycon_teleop --robot mock --duration 2
+python -m robot_toolkit.examples.joycon_teleop --robot mock --duration 2
 
 # 同样的遥操循环 + LeRobot 采集
-python -m projects.robot_toolkit.examples.piper_collect --source teleop --yes
-python -m projects.robot_toolkit.examples.piper_collect --source trajectory --name piper_02
+python -m robot_toolkit.examples.piper_collect --source teleop --yes
+python -m robot_toolkit.examples.piper_collect --source trajectory --name piper_02
 
 # 按任务 JSON 启动：示教 -> 回放 -> 采集（可带相机）
-run.bat stack_the_cube          # Windows
-./run stack_the_cube            # macOS / Linux
-python3 run.py stack_the_cube   # 任意平台
+python -m robot_toolkit.task_runner --config task.json
 ```
 
 所有入口共用同一个装配层：
@@ -117,5 +115,5 @@ build_teleop_session()
 * `piper_teach`：键盘空格 + 拖动示教，采关节轨迹；
 * `joycon_teleop`：Joy-Con 连续笛卡尔遥操作，不产生示教轨迹；
 * `piper_collect --source trajectory`：把 `piper_teach` 轨迹转成数据集；
-* `task_runner` / `run.bat`：读取任务 JSON，`robot` / `gripper` 决定后端；
+* `task_runner`：读取任务 JSON，`robot` / `gripper` 决定后端；
   按 `mode` 组织示教、回放和采集，回放时可按 `collect.fps` 同步记录相机帧。

@@ -1,8 +1,5 @@
 # Piper / Piper X（pyAgxArm）
 
-> 独立发布仓库只包含 `projects/robot_toolkit`；文中提到的 `run.bat` / `run`
-> 和 `configs/tasks` 是宿主工程里的集成示例，不在本仓库中。
-
 `robot_toolkit` 里的 Piper 后端叫 `agx_piper`，直接使用 AgileX 官方
 [`pyAgxArm`](https://github.com/agilexrobotics/pyAgxArm) Python SDK，不依赖 ROS2。
 同一套 `RobotBackend` 契约可以驱动 mock、Piper 和 UR5e：
@@ -54,10 +51,10 @@ pip install "git+https://github.com/agilexrobotics/pyAgxArm.git"
 
 ```powershell
 # 真实 CAN；默认 auto 选择 Windows agx_cando/0
-python -m projects.robot_toolkit.cli piper-check --model piper_x
+python -m robot_toolkit.cli piper-check --model piper_x
 
 # 不接硬件也能验证后端契约
-python -m projects.robot_toolkit.cli piper-check --model piper_x --mock
+python -m robot_toolkit.cli piper-check --model piper_x --mock
 ```
 
 输出包括固件、关节角、TCP、使能状态、夹爪宽度和 SDK 配置。`piper-check` 不会使能、
@@ -69,35 +66,35 @@ python -m projects.robot_toolkit.cli piper-check --model piper_x --mock
 
 ```powershell
 # 使能（不运动）
-python -m projects.robot_toolkit.examples.piper_control --enable
+python -m robot_toolkit.examples.piper_control --enable
 
 # 绝对关节角（rad），速度百分比默认 30
-python -m projects.robot_toolkit.examples.piper_control \
+python -m robot_toolkit.examples.piper_control \
   --move-j 0 1.1 -1.1 0 0.7 0 --speed-percent 20 --yes
 
 # 笛卡尔点到点：TCP [x, y, z, rx, ry, rz] 旋转向量（m / rad）
-python -m projects.robot_toolkit.examples.piper_control \
+python -m robot_toolkit.examples.piper_control \
   --move-p 0.10 0.02 0.25 0 1.57 0 --yes
 
 # 笛卡尔直线：输入与 move_p 相同的 6 维位姿
-python -m projects.robot_toolkit.examples.piper_control \
+python -m robot_toolkit.examples.piper_control \
   --move-l 0.12 0.02 0.25 0 1.57 0 --yes
 
 # 夹爪
-python -m projects.robot_toolkit.examples.piper_control --open --yes
-python -m projects.robot_toolkit.examples.piper_control --close --yes
+python -m robot_toolkit.examples.piper_control --open --yes
+python -m robot_toolkit.examples.piper_control --close --yes
 
 # 失能电机（关闭机械臂；先托住，失能后会掉电下坠）
-python -m projects.robot_toolkit.examples.piper_control --disable --yes
+python -m robot_toolkit.examples.piper_control --disable --yes
 
 # 软件电子急停（不是物理急停的替代）
-python -m projects.robot_toolkit.examples.piper_control --estop --yes
+python -m robot_toolkit.examples.piper_control --estop --yes
 ```
 
 Python API：
 
 ```python
-from projects.robot_toolkit.robot import AgxPiperConfig, AgxPiperRobot
+from robot_toolkit.robot import AgxPiperConfig, AgxPiperRobot
 
 robot = AgxPiperRobot(AgxPiperConfig(
     model='piper_x',
@@ -117,7 +114,7 @@ finally:
 需要统一安全层时用 profile：
 
 ```python
-from projects.robot_toolkit.profiles import build_robot, build_gripper
+from robot_toolkit.profiles import build_robot, build_gripper
 
 robot = build_robot('piper_x')          # 默认包 SafeRobot + Piper 关节限位
 robot.connect()
@@ -130,18 +127,17 @@ gripper.close(wait=True)
 
 ## 键盘示教（无相机）
 
-日常流程优先用上面的通用 `run.bat`；`piper_teach` 保留为 Piper 专用调试示例，
-内部已经复用同一个 `keyboard_teach` 通用循环。
+`piper_teach` 是 Piper 专用调试示例，内部已经复用同一个 `keyboard_teach` 通用循环。
 
 没有相机时，`piper_teach` 只采集**关节轨迹 + 夹爪宽度 + 开关标记**，不生成
 LeRobot 图像数据集；数据保存为 `trajectory.npz` / `trajectory.json`。
 
 ```powershell
 # 先做只读自检，并在示教前关闭 AgileX 上位机
-python -m projects.robot_toolkit.cli piper-check --model piper_x
+python -m robot_toolkit.cli piper-check --model piper_x
 
 # 进入零力拖动，开始示教
-python -m projects.robot_toolkit.examples.piper_teach --name piper_01 --speed-percent 20
+python -m robot_toolkit.examples.piper_teach --name piper_01 --speed-percent 20
 ```
 
 示教时：
@@ -173,13 +169,13 @@ outputs/piper_teach/piper_01/
 示教结束后立即回放（先提示确认急停）：
 
 ```powershell
-python -m projects.robot_toolkit.examples.piper_teach --name piper_01 --replay --speed-scale 0.3
+python -m robot_toolkit.examples.piper_teach --name piper_01 --replay --speed-scale 0.3
 ```
 
 只回放已经保存的轨迹，不再重新示教：
 
 ```powershell
-python -m projects.robot_toolkit.examples.piper_teach --name piper_01 --replay-only --speed-scale 0.3 --yes
+python -m robot_toolkit.examples.piper_teach --name piper_01 --replay-only --speed-scale 0.3 --yes
 ```
 
 回放前默认会要求确认；`--yes` 用于确认急停和工作区安全后跳过交互确认。
@@ -190,7 +186,7 @@ Piper 回放默认 `--max-joint-speed 1.5`，因此 `--speed-scale 1.0` 不再�
 0.18 s 的窗口平滑。若仍然觉得抖，先试：
 
 ```powershell
-python -m projects.robot_toolkit.examples.piper_teach --name piper_02 --replay-only --speed-scale 0.5 --smoothing 13 --yes
+python -m robot_toolkit.examples.piper_teach --name piper_02 --replay-only --speed-scale 0.5 --smoothing 13 --yes
 ```
 
 不要为了消除抖动盲目提高 `--max-joint-speed`；先降速度、增平滑。
@@ -204,58 +200,46 @@ J 模式，减少 CAN 控制帧和停顿。
 把已录示教转成 LeRobot：
 
 ```powershell
-python -m projects.robot_toolkit.examples.piper_collect --source trajectory --name piper_02
+python -m robot_toolkit.examples.piper_collect --source trajectory --name piper_02
 ```
 
 Joy-Con 采集（可带相机 JSON）：
 
 ```powershell
-python -m projects.robot_toolkit.examples.piper_collect --source teleop --yes
-python -m projects.robot_toolkit.examples.piper_collect --source teleop --cameras-json cameras.json --yes
+python -m robot_toolkit.examples.piper_collect --source teleop --yes
+python -m robot_toolkit.examples.piper_collect --source teleop --cameras-json cameras.json --yes
 ```
 
 `piper_collect` 和 `joycon_teleop` 复用同一个 `TeleopSession` / `TeleopRunner`，
 采集只额外挂 `EpisodeCollector`，没有第二套控制循环。
 
-## 按任务配置启动（通用 `run.bat`）
+## 按任务 JSON 启动
 
-`run.bat` 读取 `configs/tasks/<任务名>.json`。配置文件里的 `robot` 决定用
-Piper、UR5e、MuJoCo 还是 mock，`gripper` 决定夹爪后端；入口本身不判断机器人。
+`task_runner.py` 读取任务 JSON：`robot` 决定用 Piper、UR5e、MuJoCo 还是 mock，
+`gripper` 决定夹爪后端；入口本身不判断机器人。任务 JSON 放在应用层，用
+`--config <path>` 直接指定（或用 `ROBOT_TASK_CONFIG_DIR` 指定配置目录后按任务名
+查找）：
 
 ```powershell
-# 看有哪些任务
-run.bat --list
+# 列出可用任务
+python -m robot_toolkit.task_runner --list
 
 # 只看解析结果，不接硬件、不动机器人
-run.bat stack_the_cube --dry-run
+python -m robot_toolkit.task_runner --config task.json --dry-run
 
 # 推荐：常驻 Joy-Con 会话
 # B 开始示教 / A 保存 / ZR 切夹爪 / X×2 回放并采集 / Y×2 删除上一条
-run.bat stack_the_cube
+python -m robot_toolkit.task_runner --config task.json session
 
 # 单次调试命令（不使用常驻会话）
-run.bat stack_the_cube teach
-run.bat stack_the_cube collect
+python -m robot_toolkit.task_runner --config task.json teach
+python -m robot_toolkit.task_runner --config task.json collect
 
 # 不接硬件跑通整个流程
-run.bat stack_the_cube collect --mock --yes
+python -m robot_toolkit.task_runner --config task.json collect --mock --yes
 ```
 
-macOS / Linux 使用同一个 `run.py`，只是外层脚本不同：
-
-```bash
-chmod +x run
-./run --list
-./run stack_the_cube --dry-run
-./run stack_the_cube collect --yes
-
-# 任意平台也可以直接用 Python 入口
-python3 run.py stack_the_cube --dry-run
-```
-
-解释器优先级：`ROBOT_TOOLKIT_PYTHON` → `.robot_toolkit_python` → `.venv/bin/python`
-（Windows 还会尝试 `py` / `python` 和本机准备好的 `lerobot` 环境）。跨平台差异
-已经收在 CAN / 串口 / 相机适配器里，任务 JSON 不需要按操作系统分支。
+任务 JSON 不需要按操作系统分支，跨平台差异已经收在 CAN / 串口 / 相机适配器里。
 
 Piper 的 `stack_the_cube.json` 关键字段：
 
@@ -304,11 +288,11 @@ Piper 的 `stack_the_cube.json` 关键字段：
 UR CB3 如果只能用示教器按钮进入 Freedrive，把 `teach.freedrive` 设为 `false`，
 启动 `teach` 前手动开启 Free；Piper 则保留 `wait_feedback: "leader"`。
 
-仓库自带一份 UR5 开门示例 `configs/tasks/open_the_door.json`（Robotiq URCap +
-腕部/外部 RealSense）。它使用通用 runner 的常驻 Joy-Con 会话：
+UR5 开门这类任务同样是一份任务 JSON（Robotiq URCap + 腕部/外部 RealSense），
+用通用 runner 的常驻 Joy-Con 会话启动：
 
 ```powershell
-run.bat open_the_door
+python -m robot_toolkit.task_runner --config open_the_door.json session
 ```
 
 会话里：
@@ -323,13 +307,13 @@ run.bat open_the_door
 | `R` | 空闲时缓慢回默认姿态 |
 | `Home` | 打印当前状态 |
 
-数据在 `outputs/robot_tasks/open_the_door/`，不会混到旧的
-`outputs/ur5e_real_collect/tasks/open_the_door/`。`session` 模式只负责
-Joy-Con 常驻示教/采集；单次 `teach` / `collect --mock` 仍可用 `run.bat
-open_the_door teach` 或 `collect` 显式调用。
+数据在 `outputs/robot_tasks/open_the_door/`。`session` 模式只负责
+Joy-Con 常驻示教/采集；单次 `teach` / `collect --mock` 可用
+`python -m robot_toolkit.task_runner --config open_the_door.json teach` /
+`collect` 显式调用。
 
 这份 UR 配置启用了 `replay.continuous=true`（Ruckig/限幅连续参考）和
-`require_fresh_measurement=true`，参数来自 Mac 真机部署验证过的控制版本。
+`require_fresh_measurement=true`，参数来自真机部署验证过的控制版本。
 Windows/Linux 的 125 Hz 回放使用 RTDE `initPeriod()/waitPeriod()`；macOS
 自动退回主机时钟，避免 `ur_rtde 1.6.5` 的相对 `waitPeriod` 漂移。
 
