@@ -30,7 +30,8 @@ run.bat piper_master_slave     # 按 JSON 里的 mode 启动
    单步限幅、速度限制。仿真和真机走完全相同的检查。
 4. **依赖按需加载**：核心只依赖 NumPy；`mujoco`、`ur_rtde`、`pyrealsense2`、
    `opencv`、`lerobot` 都在真正用到时才 import。没有装 SDK 也能跑自检和离线演示。
-5. **数据先落盘，再导出**：采集线程只写压缩帧，导出在后台线程完成；
+5. **数据先落盘，再导出**：采集线程只写原始 spool 帧（`collect.compress` 可开压缩），
+   导出在后台线程完成；
    网络、编码、LeRobot 版本问题都不会破坏已经录到的原始数据。
 6. **坐标系/单位写死在契约里**：位姿是 `xyz + rotvec(rad)`，深度是
    `uint16 mm, 0 无效`，外参是 `T_world_camera`（光学系 x 右 / y 下 / z 前）。
@@ -199,7 +200,7 @@ pip install -e .
 
 真机任务都由 `configs/tasks/<name>.json` 描述（机器人、夹爪、相机、采集参数都在
 profile 里），`run.bat` 是 Windows 的薄封装，`run.py` 是跨平台等价入口。
-仓库自带两个可直接改的 demo 配置：
+仓库自带四个可直接改的 demo 配置：
 
 | 配置 | 机器人 | 模式 |
 |---|---|---|
@@ -231,7 +232,7 @@ python -c "from robot_toolkit.camera.realsense import list_devices; print(list_d
 ```powershell
 run.bat --list                       # 列出可用任务（工作区 + 仓库 demo）
 run.bat ur5e_session                 # UR5e：Joy-Con 常驻会话（B 示教 / X×2 回放采集）
-run.bat piper_master_slave           # Piper 主从示教：空格开始/结束，q 退出
+run.bat piper_master_slave           # Piper 主从示教：链路就绪即录，空格结束保存，q 退出
 ```
 
 ```bash

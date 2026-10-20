@@ -150,7 +150,7 @@ python -m robot_toolkit.examples.piper_collect `
 
 ```powershell
 run.bat --list                                   # 列出任务
-run.bat piper_master_slave                       # 直接跑：空格开始/结束，q 退出（不限时长）
+run.bat piper_master_slave                       # 直接跑：链路就绪即录，空格结束保存，q 退出（不限时长）
 run.bat piper_master_slave master_slave --dry-run  # 只解析，不连硬件
 ```
 
@@ -196,7 +196,8 @@ run.bat piper_master_slave master_slave --dry-run  # 只解析，不连硬件
 }
 ```
 
-`master_slave` 段只写 `fps` 就是操作员控制模式（空格开始/结束、q 退出、不限时长）。
+`master_slave` 段只写 `fps` 就是默认模式：链路就绪即开录，空格结束并保存（再按空格录下一条），
+`x` 丢弃当前条，`q` 退出，不限时长。
 `sample_seconds > 0` 会自动开录并在到点后收尾，仅供无人值守/测试；`collect.max_frames`
 同理，`0` 表示单条 episode 不设帧数上限。`fps` 建议与相机帧率对齐（腕部相机 30 fps
 → 30 Hz）。
