@@ -51,3 +51,7 @@ packages = [
     "robot_toolkit.teach",
     "robot_toolkit.teleop",
 ]
+
+[tool.setuptools.package-data]
+# Demo task configs ship with the package so `run.bat <demo>` works after install.
+robot_toolkit = ["configs/tasks/*.json"]

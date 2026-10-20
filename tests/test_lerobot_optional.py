@@ -1,8 +1,9 @@
 """Optional LeRobot integration test; skipped when LeRobot is not installed.
 
-Run it with the environment that actually exports datasets::
+Run it with the environment that actually exports datasets (the one where
+``import lerobot`` works)::
 
-    D:\\app\\conda\\envs\\lerobot\\python.exe -m pytest projects/robot_toolkit/tests/test_lerobot_optional.py -q
+    python -m pytest tests/test_lerobot_optional.py -q
 """
 
 from __future__ import annotations

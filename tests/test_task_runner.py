@@ -5,6 +5,7 @@ import json
 import queue
 
 import numpy as np
+import pytest
 
 import robot_toolkit.task_runner as task_runner
 from robot_toolkit.task_runner import (dataset_root, execute,
@@ -189,3 +190,137 @@ def test_collect_mode_can_capture_a_mock_camera(tmp_path):
     name = _write_trajectory(config)
 
     assert execute(config, mode='collect', name=name, mock=True, yes=True) == 0
+
+
+def _write_master_slave_config(path, root):
+    payload = {
+        'slug': 'ms_task',
+        'task': 'master slave task',
+        'mode': 'master_slave',
+        'root': str(root),
+        'robot': {'kind': 'agx_piper', 'name': 'piper_x',
+                  'options': {'model': 'piper_x', 'enable_on_connect': False,
+                              'configure_on_connect': False},
+                  'safety': False},
+        'gripper': {'kind': 'none'},
+        'collect': {'repo_id': 'local/ms_task', 'fps': 10.0, 'export': 'manifest',
+                    'cameras': [{'kind': 'mock', 'name': 'wrist_camera',
+                                 'width': 32, 'height': 24, 'fps': 30}]},
+        'master_slave': {'auto_record': True, 'sample_seconds': 0.3, 'fps': 10.0},
+    }
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    return path
+
+
+def test_feature_names_option_is_validated(tmp_path):
+    path = _write_master_slave_config(tmp_path / 'ms3.json', tmp_path / 'out')
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['collect']['feature_names'] = 'POS'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    assert load_task_config(str(path)).collect.feature_names == 'pos'
+
+    payload['collect']['feature_names'] = 'whatever'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    with pytest.raises(ValueError):
+        load_task_config(str(path))
+
+
+def test_master_slave_mode_samples_from_config(tmp_path):
+    config = load_task_config(str(_write_master_slave_config(tmp_path / 'ms.json', tmp_path)))
+    assert config.mode == 'master_slave'
+    assert config.master_slave.auto_record is True
+
+    assert execute(config, mock=True) == 0
+    takes = list(dataset_root(config).rglob('take.json'))
+    assert len(takes) == 1
+    assert len(list(takes[0].parent.glob('*.npz'))) >= 2
+
+
+def test_repo_ships_demo_config(tmp_path, monkeypatch):
+    # A fresh clone has no workspace configs; the packaged demo must still load.
+    monkeypatch.setattr(task_runner, 'ROOT', tmp_path)
+    task = load_task_config('piper_master_slave')
+    assert task.mode == 'master_slave'
+    assert task.robot['options']['configure_on_connect'] is False
+    assert task.master_slave.sample_seconds == 0.0
+    assert task.master_slave.auto_record is True
+    assert task.collect.max_frames == 0
+
+    ur5 = load_task_config('ur5e_session')
+    assert ur5.mode == 'session'
+    assert ur5.robot['kind'] == 'ur_rtde'
+    assert ur5.gripper['kind'] == 'robotiq'
+
+
+def test_master_slave_duration_starts_recording(tmp_path):
+    path = _write_master_slave_config(tmp_path / 'ms2.json', tmp_path / 'out')
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    # No auto_record flag: a configured duration is enough to go hands-free.
+    payload['master_slave'] = {'auto_record': False, 'sample_seconds': 0.3, 'fps': 10.0}
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    config = load_task_config(str(path))
+
+    assert execute(config, mock=True) == 0
+    assert list(dataset_root(config).rglob('take.json'))
+
+
+def _write_calibrate_config(path, root, cameras=None):
+    payload = {
+        'slug': 'cal_task',
+        'task': 'calibrate task',
+        'mode': 'calibrate',
+        'root': str(root),
+        'robot': {'kind': 'agx_piper', 'name': 'piper_x',
+                  'options': {'model': 'piper_x', 'enable_on_connect': False,
+                              'configure_on_connect': False},
+                  'safety': False},
+        'gripper': {'kind': 'none'},
+        'collect': {'repo_id': 'local/cal_task', 'fps': 30.0, 'export': 'manifest',
+                    'cameras': cameras if cameras is not None else []},
+        'calibrate': {'kind': 'handeye', 'eye': 'eye_in_hand',
+                      'camera': 'wrist_camera', 'pattern': [9, 6],
+                      'square_size': 0.025, 'min_samples': 8},
+    }
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    return path
+
+
+def test_calibrate_mode_requires_a_camera(tmp_path):
+    config = load_task_config(str(_write_calibrate_config(tmp_path / 'cal.json', tmp_path)))
+    assert config.mode == 'calibrate'
+    assert config.calibrate.kind == 'handeye'
+    # No camera in the profile: the mode must refuse instead of failing later.
+    assert execute(config, mock=True) == 2
+
+
+def test_calibrate_config_validation(tmp_path):
+    path = _write_calibrate_config(tmp_path / 'cal2.json', tmp_path)
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['calibrate']['kind'] = 'nope'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    with pytest.raises(ValueError):
+        load_task_config(str(path))
+
+    payload['calibrate']['kind'] = 'intrinsics'
+    payload['calibrate']['eye'] = 'eye_to_hand'
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    task = load_task_config(str(path))
+    assert task.calibrate.kind == 'intrinsics'
+    assert execute(task, mode='calibrate', mock=True, dry_run=True) == 0
+
+
+def test_auto_calibration_requires_confirmation(tmp_path):
+    path = _write_calibrate_config(
+        tmp_path / 'cal_auto.json', tmp_path,
+        cameras=[{'kind': 'mock', 'name': 'wrist_camera', 'width': 32,
+                  'height': 24, 'fps': 30}])
+    payload = json.loads(path.read_text(encoding='utf-8'))
+    payload['calibrate'].update({'auto': True, 'pose_count': 3, 'settle_s': 0.0})
+    path.write_text(json.dumps(payload), encoding='utf-8')
+    config = load_task_config(str(path))
+
+    # Moving the arm needs an explicit --yes; without it the mode refuses.
+    assert execute(config, mock=True) == 2
+    # With --yes it runs the sweep and reports the missing samples instead of
+    # crashing (mock camera sees no board and mock robot has no TCP).
+    assert execute(config, mock=True, yes=True) == 1

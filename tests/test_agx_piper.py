@@ -10,8 +10,10 @@ import pytest
 
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.core.mathutils import euler_to_matrix, rotvec_to_matrix
+from robot_toolkit.errors import ConnectionFailed
 from robot_toolkit.profiles import build_gripper, build_robot
-from robot_toolkit.robot import AgxPiperConfig, AgxPiperRobot
+from robot_toolkit.robot import (AgxPiperConfig, AgxPiperRobot,
+                                 scan_piper_can, set_piper_linkage)
 
 
 class _Message:
@@ -234,6 +236,36 @@ def test_disable_retries_while_feedback_lags(monkeypatch):
     robot.disconnect()
 
 
+def test_read_only_connect_sends_no_config(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(model='piper_x', firmware='default',
+                                         enable_on_connect=False,
+                                         configure_on_connect=False), mock=False)
+    robot.connect()
+    assert arm.speed is None
+    assert arm.motion_mode_calls == 0
+    assert not arm.enabled
+    assert robot.state().q is not None
+    robot.disconnect()
+
+
+def test_leader_joint_angles_reads_broadcast(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(model='piper_x', firmware='default',
+                                         enable_on_connect=False,
+                                         configure_on_connect=False), mock=False)
+    robot.connect()
+    assert robot.leader_joint_angles() is None
+    arm.leader_q = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    assert robot.leader_joint_angles() == pytest.approx([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
+    assert arm.motion_mode_calls == 0
+    robot.disconnect()
+
+
 def test_profile_builds_safe_piper_and_gripper(monkeypatch):
     monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
     _FakeFactory.arm = _FakeArm()
@@ -245,3 +277,128 @@ def test_profile_builds_safe_piper_and_gripper(monkeypatch):
     assert gripper.max_width == pytest.approx(0.08)
     assert gripper.close(wait=True)
     robot.disconnect()
+
+
+class _FakeBus:
+    def __init__(self, messages):
+        self._messages = list(messages)
+        self.kwargs = {}
+        self.sent = []
+        self.shutdown_called = False
+
+    def recv(self, timeout=None):
+        if self._messages:
+            return self._messages.pop(0)
+        time.sleep(0.001)
+        return None
+
+    def send(self, message, timeout=None):
+        self.sent.append(message)
+
+    def shutdown(self):
+        self.shutdown_called = True
+
+
+class _FakeMessage:
+    def __init__(self, arbitration_id, is_extended_id=False, data=b'', dlc=0):
+        self.arbitration_id = arbitration_id
+        self.is_extended_id = is_extended_id
+        self.data = bytes(data)
+        self.dlc = dlc
+
+
+def _frame(can_id, timestamp, data=b'\x01\x02\x03\x04\x05\x06\x07\x08'):
+    return types.SimpleNamespace(arbitration_id=can_id, timestamp=timestamp,
+                                 dlc=len(data), data=data)
+
+
+def _fake_can(monkeypatch, bus, adapters=1):
+    module = types.ModuleType('can')
+
+    def detect_available_configs(interfaces=None):
+        return [{'interface': name, 'channel': 0}
+                for name in (interfaces or []) for _ in range(adapters)]
+
+    def open_bus(**kwargs):
+        bus.kwargs = kwargs
+        return bus
+
+    module.detect_available_configs = detect_available_configs
+    module.Bus = open_bus
+    module.Message = _FakeMessage
+    monkeypatch.setitem(sys.modules, 'can', module)
+
+
+def test_scan_sees_leader_and_follower(monkeypatch):
+    bus = _FakeBus([_frame(0x155, 0.00), _frame(0x156, 0.01), _frame(0x157, 0.02),
+                    _frame(0x251, 0.00), _frame(0x251, 0.01), _frame(0x251, 0.02),
+                    _frame(0x2A1, 0.00)])
+    _fake_can(monkeypatch, bus)
+    report = scan_piper_can(interface='agx_cando', channel='0', seconds=0.2)
+    assert bus.kwargs['interface'] == 'agx_cando' and bus.kwargs['channel'] == '0'
+    assert bus.kwargs['receive_own_messages'] is False
+    assert bus.shutdown_called
+    assert report['adapters'] == 1
+    assert report['frames'] == 7
+    assert report['leader_broadcast'] and report['follower_feedback']
+    assert report['arms_estimate'] == 2
+    ids = {node['id']: node for node in report['nodes']}
+    assert ids[0x251]['label'] == 'motor_state_j1'
+    assert ids[0x2A1]['label'] == 'arm_status'
+    assert ids[0x251]['count'] == 3
+    assert ids[0x251]['hz'] == pytest.approx(100.0, abs=0.5)
+    assert ids[0x251]['hex'] == '0x251'
+
+
+def test_scan_reports_duplicated_ids(monkeypatch):
+    frames = [_frame(0x2A1, index * 0.0025) for index in range(41)]
+    _fake_can(monkeypatch, _FakeBus(frames))
+    report = scan_piper_can(interface='agx_cando', channel='0', seconds=0.2)
+    assert report['frames'] == 41
+    assert report['arms_estimate'] == 2
+    assert any('0x2A1' in note and '两倍' in note for note in report['notes'])
+
+
+def test_scan_reports_silent_bus(monkeypatch):
+    bus = _FakeBus([])
+    _fake_can(monkeypatch, bus, adapters=0)
+    report = scan_piper_can(interface='agx_cando', channel='0', seconds=0.2)
+    assert report['frames'] == 0 and report['nodes'] == []
+    assert report['arms_estimate'] == 0
+    assert any('适配器' in note for note in report['notes'])
+
+
+def test_scan_reports_open_failure(monkeypatch):
+    module = types.ModuleType('can')
+    module.detect_available_configs = lambda interfaces=None: []
+
+    def open_bus(**kwargs):
+        raise RuntimeError('no adapter')
+
+    module.Bus = open_bus
+    monkeypatch.setitem(sys.modules, 'can', module)
+    with pytest.raises(ConnectionFailed) as info:
+        scan_piper_can(interface='agx_cando', channel='0', seconds=0.2)
+    assert 'no adapter' in str(info.value)
+
+
+def test_set_linkage_broadcasts_one_470_frame(monkeypatch):
+    bus = _FakeBus([])
+    _fake_can(monkeypatch, bus)
+    report = set_piper_linkage('leader', interface='agx_cando', channel='0')
+    assert bus.shutdown_called
+    assert len(bus.sent) == 1
+    message = bus.sent[0]
+    assert message.arbitration_id == 0x470
+    assert message.is_extended_id is False
+    assert message.data == bytes([0xFA, 0, 0, 0, 0, 0, 0, 0])
+    assert report['role'] == 'leader' and report['can_id'] == '0x470'
+
+
+def test_set_linkage_follower_and_bad_role(monkeypatch):
+    bus = _FakeBus([])
+    _fake_can(monkeypatch, bus)
+    set_piper_linkage('follower', interface='agx_cando', channel='0')
+    assert bus.sent[0].data == bytes([0xFC, 0, 0, 0, 0, 0, 0, 0])
+    with pytest.raises(ValueError):
+        set_piper_linkage('master', interface='agx_cando', channel='0')

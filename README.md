@@ -8,6 +8,15 @@
 可以独立安装使用，也可以作为现有系统的迁移目标：已有 UR 驱动代码通过
 `adapters/legacy_ur.py` 包装一层，即可接入新的示教/采集流程。
 
+最直接的用法是**按任务配置文件启动**：
+
+```powershell
+run.bat --list                 # 列出 configs/tasks 下的任务
+run.bat piper_master_slave     # 按 JSON 里的 mode 启动
+```
+
+跨平台等价入口是 `python run.py ...`；解释器选择与配置字段见第 5.1 节。
+
 ---
 
 ## 1. 设计原则
@@ -33,8 +42,9 @@
 ```text
 robot_toolkit/
 ├── __init__.py               # 公共导出 + 版本
-├── cli.py                    # 统一命令行：selftest / demo / calib-* / doctor
-├── task_runner.py            # 按任务 JSON（含 robot/gripper profile）启动示教/回放/采集
+├── run.bat / run.py          # 最直接入口：选解释器 -> task_runner（配置文件启动）
+├── cli.py                    # 统一命令行：selftest / demo / calib-* / piper-* / doctor
+├── task_runner.py            # 按任务 JSON（含 robot/gripper profile）启动示教/回放/采集/主从采样
 ├── config.py                 # JSON + dataclass 递归配置
 ├── profiles.py               # 由配置构建 mock / ur_rtde / agx_piper / mujoco 后端
 ├── control/
@@ -80,6 +90,8 @@ robot_toolkit/
 ├── collect/
 │   ├── schema.py             # 数据集契约 + LeRobot features
 │   ├── recorder.py           # 异步 episode 录制（帧落盘 + 后台导出）
+│   ├── session.py            # 机器人/夹爪/相机 -> episode 采集会话
+│   ├── passive.py            # 被动采样循环（只读，供主从示教/配置驱动复用）
 │   ├── observation.py        # CameraFrame -> images/depth
 │   └── export.py             # LeRobot 导出 + 无依赖 manifest 导出
 ├── calibrate/
@@ -93,7 +105,7 @@ robot_toolkit/
 │   ├── mock_pipeline.py      # 完整离线链路示例
 │   ├── piper_control.py      # Piper / Piper X 真机读写示例
 │   ├── piper_teach.py        # Piper 键盘示教 + 轨迹回放（无需相机）
-│   ├── piper_collect.py      # Piper 遥控/轨迹 -> LeRobot 数据集
+│   ├── piper_collect.py      # Piper 主从示教被动采样 / 遥控 / 轨迹 -> 数据集
 │   └── joycon_teleop.py      # 同一 Joy-Con 栈驱动 UR5e / Piper X
 ├── assets/                   # 可打印的 ChArUco 标定板（PDF / PNG）
 ├── MIGRATION.md              # 旧工程迁移对照表
@@ -104,6 +116,10 @@ robot_toolkit/
 ├── requirements-piper.txt    # 可选：Piper SDK（pyAgxArm + python-can）
 └── tests/                    # 纯 NumPy 测试
 ```
+
+任务配置放在工作区的 `configs/tasks/*.json`（与 `run.bat` 同级或 `parents[2]`
+能找到的位置）；`task_runner` 会按 `ROBOT_TASK_CONFIG_DIR` → 工作区 `configs/tasks`
+→ `outputs/robot_tasks/<name>/task.json` 的顺序查找。
 
 ---
 
@@ -177,20 +193,155 @@ pip install robot-toolkit          # 发布版
 pip install -e .
 ```
 
-安装后即可运行（不接硬件、不装 SDK 也能跑离线自检和演示）：
+安装后即可运行（不接硬件、不装 SDK 也能跑离线自检和演示）。
+
+### 5.1 主入口：配置文件驱动（`run.bat` / `run.py`）
+
+真机任务都由 `configs/tasks/<name>.json` 描述（机器人、夹爪、相机、采集参数都在
+profile 里），`run.bat` 是 Windows 的薄封装，`run.py` 是跨平台等价入口。
+仓库自带两个可直接改的 demo 配置：
+
+| 配置 | 机器人 | 模式 |
+|---|---|---|
+| `piper_master_slave` | Piper X（主从示教，只读采样） | `master_slave` |
+| `piper_calibrate` | Piper X + 腕部相机（手动摆位标定） | `calibrate` |
+| `piper_calibrate_auto` | Piper X 单臂（自动扫描标定，需 `--yes`） | `calibrate` |
+| `ur5e_session` | UR5e + Robotiq（Joy-Con 常驻会话） | `session` |
+
+查找顺序：工作区 `configs/tasks`（本地覆盖）→ 仓库 `robot_toolkit/configs/tasks`
+（demo）→ `outputs/robot_tasks/<name>/task.json`；`ROBOT_TASK_CONFIG_DIR` 可整体覆盖。
+`ur5e_session` 里的 `robot.options.ip` 和相机 `serial` 需要在现场按实际设备填。
+
+相机 `kind` 按**相机型号**选，和机器人无关：
+
+| `kind` | 适用 | 关键字段 |
+|---|---|---|
+| `realsense` | Intel RealSense（D435i 等） | `depth`；`serial` 可选 |
+| `opencv` | 普通 UVC/USB 相机 | `index`（0/1/…） |
+
+`serial` 只在**同时接多台同款相机**时必须填（否则两个条目会抢同一台设备）；单台留空即可。
+仓库里的 demo 都留空，现场多相机配置可参考 `open_the_door.json`（两台 D435i 各带 serial）。
+同一个 RealSense 用 `opencv` 也能出图（走 UVC RGB 通道），但没有深度和真实内参，
+所以录制数据集时应优先用 `realsense`。枚举已连接的设备：
+
+```powershell
+python -c "from robot_toolkit.camera.realsense import list_devices; print(list_devices())"
+```
+
+```powershell
+run.bat --list                       # 列出可用任务（工作区 + 仓库 demo）
+run.bat ur5e_session                 # UR5e：Joy-Con 常驻会话（B 示教 / X×2 回放采集）
+run.bat piper_master_slave           # Piper 主从示教：空格开始/结束，q 退出
+```
+
+```bash
+# Linux / macOS
+python run.py --list
+python run.py ur5e_session
+```
+
+配置里已经写全了采集参数，所以**不需要尾巴参数**。默认和 UR5 的 `collect` 一样是
+**一条命令就开录**：链路就绪后立即录制，操作员按空格结束并保存（再按空格录下一条），
+不设时长、不设帧数上限。
+
+需要无人值守/测试时才显式打开限制：
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `master_slave.auto_record` | `true` | 启动即录；设 `false` 改成按空格才开始 |
+| `master_slave.sample_seconds` | `0` | `>0` 才启用「到点自动结束」的总时长窗口 |
+| `collect.max_frames` | `0` | `0` = 单条 episode 不限帧数；`>0` 才截断 |
+| `master_slave.fps` | `30` | 采集频率，建议与相机帧率对齐 |
+| `collect.feature_names` | `unit` | 列标签风格：`unit` = `joint_1.rad` / `piper_gripper.width_m`；`pos` = `joint_1.pos` / `gripper.pos`（LeRobot 社区惯例，仅改标签，数值与列顺序不变） |
+| `collect.compress` | `false` | 是否压缩 spool 的 `.npz` 帧。`false` 写原始帧：640×480 RGB+深度约 1.5 MB/帧（30 Hz ≈ 45 MB/s），但每帧只要 ~3 ms；`true` 省约 5% 空间却要 ~50 ms/帧，30 Hz 会撑爆写队列并中断 episode |
+
+CLI 的 `--auto-record` / `--sample-seconds` / `--dataset-root` / `--mock` 只是临时覆盖：
+
+```powershell
+run.bat piper_master_slave master_slave --dry-run        # 不连硬件，只看解析结果
+run.bat piper_master_slave --mock --sample-seconds 5      # 离线跑通链路
+```
+
+写盘说明：原始帧落在 `outputs/robot_tasks/<slug>/dataset/<会话>/take_*/`，导出成 LeRobot
+之后并不删除（保留是为了以后能重导）。10 s / 30 Hz / 640×480 RGB+深度 的一条大约 460 MB，
+长条建议关掉相机 `depth` 或打开 `collect.compress`。
+
+### 5.2 标定（棋盘格）
+
+标定同样是配置驱动（`mode: "calibrate"`），采集和求解都在一个循环里：
+
+```json
+"mode": "calibrate",
+"calibrate": {
+  "kind": "handeye",         // handeye | intrinsics | both
+  "eye": "eye_in_hand",      // eye_in_hand | eye_to_hand
+  "camera": "wrist_camera",
+  "pattern": [9, 6],         // 棋盘内角点数
+  "square_size": 0.025,      // 米
+  "min_samples": 8,
+  "path": "",                // 空 = outputs/robot_tasks/<slug>/calibration.json
+  "apply": false             // 求解后立即应用到相机对象
+}
+```
+
+```powershell
+run.bat piper_calibrate            # 空格=采集一帧，s=求解并保存，q=退出
+```
+
+- `handeye` 用从臂 `TCP`（含 `robot.options.tcp_offset`）+ 腕部相机；`intrinsics` 只采棋盘视角、不读机器人位姿；
+- 主从联动时摆位就是拖主臂，命令本身**不发送任何运动指令**；
+- 输出是 `CalibrationStore` JSON，可用 `python -m robot_toolkit.cli calib-show <path>` 查看摘要。
+
+**全自动扫描**（只适用于主机单独控制的一台臂；会移动机械臂，必须 `--yes`）：
+
+```powershell
+run.bat piper_calibrate_auto --yes
+```
+
+流程：按 `pose_count` 生成位姿（或直接用 `poses` 数组）→ 逐点 `move_j` → 停 `settle_s` →
+检测棋盘 → 攒够 `min_samples` 自动求解保存；检测失败的位姿自动跳过，最后按实际样本数决定是否保存。
+
+```json
+"calibrate": {
+  "auto": true, "pose_count": 12, "pose_delta_rad": 0.25, "pose_seed": 0,
+  "settle_s": 0.8, "speed_scale": 0.2, "poses": []
+}
+```
+
+⚠️ 主从**硬件联动**下不能用这个自动模式（发运动指令会打断联动）；那种接线只能用手动摆位版 `piper_calibrate`。
+
+解释器选择（不写死任何本机路径）：
+
+1. 环境变量 `ROBOT_TOOLKIT_PYTHON`
+2. `run.bat` 同目录或上级目录的 `.robot_toolkit_python` 文件（内容为解释器路径，已 gitignore；
+   在工作区根目录放一份，仓库里的 `run.bat` 也能找到）
+3. PATH 里的 `py` / `python`
+
+需要 LeRobot 导出时，把上面任一项指向装了 `lerobot` 的环境；否则把任务 JSON 的
+`collect.export` 改成 `manifest`。
+
+### 5.3 诊断与单模块命令
 
 ```powershell
 # 不接硬件，验证核心数学、接口和录制链路
 python -m robot_toolkit.cli selftest
 
-# 查看统一契约
+# 查看统一契约 / 已安装的可选 SDK
 python -m robot_toolkit.cli info
-
-# 查看已安装的可选 SDK
 python -m robot_toolkit.cli doctor
 
 # Piper X 只读自检（真实 CAN；加 --mock 可不接硬件）
 python -m robot_toolkit.cli piper-check --model piper_x
+
+# Piper 总线被动扫描：列出总线上出现的 CAN ID / 帧率，判断有几台手臂在线
+python -m robot_toolkit.cli piper-scan --seconds 3
+
+# 恢复主从示教：广播 0x470 联动配置（--yes 确认；一次只给一台手臂上电）
+python -m robot_toolkit.cli piper-linkage --role leader --yes
+python -m robot_toolkit.cli piper-linkage --role follower --yes
+
+# 主从示教直接采样（只读，不发送任何报文；空格=开始/结束一条 episode）
+python -m robot_toolkit.examples.piper_collect --source master-slave --fps 15
 
 # Piper X 控制示例（需要 --yes；安装/CAN/固件详见 PIPER.md）
 python -m robot_toolkit.examples.piper_control --enable
@@ -210,6 +361,7 @@ python -m pytest tests -q
 
 真机任务由 `task_runner.py` 读取的任务 JSON 驱动，`robot` / `gripper` /
 `camera` 都由 profile 决定（见 `profiles.py`），业务启动器放在应用层。
+`run.bat` / `run.py` 只是把包路径和解释器选好，然后转给 `task_runner`。
 
 `demo` 会生成：
 

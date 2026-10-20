@@ -2,8 +2,13 @@
 
 The capture loop must never block on disk or on a dataset writer, because a
 stalled capture silently changes the timing of a demonstration.  Frames go to
-a queue and are written as compressed ``.npz`` files by a worker thread; the
-dataset export runs in a second thread (or later, from the manifest).
+a queue and are written as ``.npz`` files by a worker thread; the dataset
+export runs in a second thread (or later, from the manifest).
+
+Frames are written uncompressed by default: deflating a 640x480 RGB + depth
+frame costs ~50 ms on a laptop CPU (the spool queue then drains at ~20 fps and a
+30 Hz episode aborts with "write queue is full") while saving only a few percent.
+Pass ``compress=True`` when disk space matters more than sustained frame rate.
 """
 
 from __future__ import annotations
@@ -52,7 +57,12 @@ class EpisodeRecorder:
     def __init__(self, root, schema: DatasetSchema, export=None,
                  export_mode: str = 'background', fps: float | None = None,
                  max_frames: int = 6000, queue_max: int = 64,
-                 clock=time.monotonic):
+                 compress: bool = False, clock=time.monotonic):
+        """``max_frames`` caps one episode; ``0`` means no frame cap.
+
+        ``compress=False`` (default) stores raw ``.npz`` frames so the spool can
+        keep up with a 30 Hz camera; compression is ~20x slower per frame.
+        """
         if export_mode not in ('background', 'deferred'):
             raise ValueError("export_mode must be 'background' or 'deferred'")
         self.root = Path(root)
@@ -62,6 +72,7 @@ class EpisodeRecorder:
         self.fps = float(fps or schema.fps)
         self.max_frames = int(max_frames)
         self.queue_max = int(queue_max)
+        self.compress = bool(compress)
         self.clock = clock
         self.session = self.root / (datetime.now().strftime('%Y%m%d_%H%M%S') + '_' +
                                     uuid.uuid4().hex[:6])
@@ -129,7 +140,7 @@ class EpisodeRecorder:
         with self._lock:
             if self.phase != 'recording' or self.take is None:
                 return False
-            if self.frames >= self.max_frames:
+            if self.max_frames > 0 and self.frames >= self.max_frames:
                 self.error = 'maximum episode length reached'
                 self.phase = 'error'
                 return False
@@ -212,7 +223,8 @@ class EpisodeRecorder:
             try:
                 if operation == 'frame':
                     index, sample = payload
-                    np.savez_compressed(take / f'{index:06d}.npz', **sample)
+                    writer = np.savez_compressed if self.compress else np.savez
+                    writer(take / f'{index:06d}.npz', **sample)
                 elif operation == 'save':
                     meta = json.loads((take / 'take.json').read_text(encoding='utf-8'))
                     if take in self._bad_takes:

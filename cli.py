@@ -244,6 +244,7 @@ def cmd_piper_check(args) -> int:
         firmware=args.firmware,
         speed_percent=args.speed_percent,
         enable_on_connect=False,
+        configure_on_connect=bool(args.allow_writes),
         has_gripper=not args.no_gripper,
         mock=bool(args.mock),
     )
@@ -263,6 +264,46 @@ def cmd_piper_check(args) -> int:
         return 0 if state.q is not None else 1
     finally:
         robot.disconnect()
+
+
+# ------------------------------------------------------------------ piper scan
+def cmd_piper_scan(args) -> int:
+    from .robot import scan_piper_can
+
+    try:
+        payload = scan_piper_can(interface=args.interface, channel=args.channel,
+                                 bitrate=args.bitrate, seconds=args.seconds)
+    except Exception as exc:
+        print(f'[FAIL] {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default))
+    if args.json:
+        Path(args.json).write_text(json.dumps(payload, ensure_ascii=False, indent=2,
+                                              default=_json_default), encoding='utf-8')
+    print(f"\n适配器 {payload['adapters']} 个 · {payload['seconds']:.1f}s 内 {payload['frames']} 帧 "
+          f"/ {len(payload['nodes'])} 个 CAN ID · 估计在线手臂 {payload['arms_estimate']} 台")
+    for note in payload['notes']:
+        print(f'- {note}')
+    return 0 if payload['frames'] else 1
+
+
+def cmd_piper_linkage(args) -> int:
+    from .robot import set_piper_linkage
+
+    if not args.yes:
+        print('这会向总线上所有手臂广播 0x470 联动模式配置；确认后加 --yes 执行',
+              file=sys.stderr)
+        return 2
+    try:
+        payload = set_piper_linkage(args.role, interface=args.interface,
+                                    channel=args.channel, bitrate=args.bitrate)
+    except Exception as exc:
+        print(f'[FAIL] {type(exc).__name__}: {exc}', file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default))
+    print(f"- 已发送 {payload['can_id']} = {payload['data']}（role={payload['role']}）")
+    print(f"- {payload['note']}")
+    return 0
 
 
 # ----------------------------------------------------------------------- demo
@@ -424,7 +465,27 @@ def build_parser() -> argparse.ArgumentParser:
     piper.add_argument('--speed-percent', type=int, default=50)
     piper.add_argument('--no-gripper', action='store_true')
     piper.add_argument('--mock', action='store_true', help='exercise the backend without CAN')
+    piper.add_argument('--allow-writes', action='store_true',
+                       help='允许发送配置帧（0x151 运动模式 + 固件查询）；主从示教时不要加')
     piper.set_defaults(func=cmd_piper_check)
+
+    scan = subparsers.add_parser('piper-scan',
+                                 help='passively list CAN IDs on a Piper bus (no motion)')
+    scan.add_argument('--interface', default='auto', help='auto / agx_cando / socketcan / slcan')
+    scan.add_argument('--channel', default='auto', help='auto / 0 / can0 / /dev/ttyACM0')
+    scan.add_argument('--bitrate', type=int, default=1_000_000)
+    scan.add_argument('--seconds', type=float, default=3.0, help='listen window (s)')
+    scan.add_argument('--json', help='write the scan report to this file')
+    scan.set_defaults(func=cmd_piper_scan)
+
+    linkage = subparsers.add_parser('piper-linkage',
+                                    help='restore master-slave teach mode with one 0x470 frame')
+    linkage.add_argument('--role', required=True, choices=['leader', 'follower'])
+    linkage.add_argument('--interface', default='auto', help='auto / agx_cando / socketcan / slcan')
+    linkage.add_argument('--channel', default='auto', help='auto / 0 / can0 / /dev/ttyACM0')
+    linkage.add_argument('--bitrate', type=int, default=1_000_000)
+    linkage.add_argument('--yes', action='store_true', help='confirm the broadcast write')
+    linkage.set_defaults(func=cmd_piper_linkage)
 
     demo = subparsers.add_parser('demo', help='run an offline teach/replay/collect demo')
     demo.add_argument('--out', help='output directory')

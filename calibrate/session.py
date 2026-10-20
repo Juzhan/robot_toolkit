@@ -9,9 +9,9 @@ module adds the missing application layer:
 * persist the result through :class:`CalibrationStore`.
 
 The robot pose comes from the shared ``state().tcp`` contract (rotation vector),
-so the same session works for UR5e and Piper X.  A custom detector can be
-injected for ChArUco/ArUco/fiducial pipelines; the built-in detector uses an
-OpenCV chessboard.
+so the same session works for UR5e and Piper X.  ``ChessboardDetector`` handles a
+plain checkerboard; ``CharucoDetector`` handles the ChArUco board shipped in
+``assets/`` (more robust: partial views and per-marker IDs).
 """
 from __future__ import annotations
 
@@ -79,6 +79,68 @@ class ChessboardDetector:
                 rotation = cv2.Rodrigues(rvec)[0]
                 transform = np.eye(4)
                 transform[:3, :3] = rotation
+                transform[:3, 3] = np.asarray(tvec).reshape(3)
+        return BoardObservation(object_points=object_points, image_points=image_points,
+                                T_cam_board=transform,
+                                image_size=(gray.shape[1], gray.shape[0]))
+
+
+class CharucoDetector:
+    """ChArUco detector for the board shipped in ``assets/``.
+
+    Defaults match ``board_charuco_300dpi.pdf``: 7x10 squares, 35 markers of the
+    5x5 dictionary.  ``square_size`` is what you measure on the printed board —
+    300 dpi print scaling makes it differ from the nominal value.
+    """
+
+    def __init__(self, squares=(7, 10), square_size: float = 0.025,
+                 marker_size: float = 0.0, aruco_dict: str = 'DICT_5X5_100',
+                 min_corners: int = 6):
+        self.squares = (int(squares[0]), int(squares[1]))
+        self.square_size = float(square_size)
+        self.marker_size = float(marker_size) if float(marker_size) > 0 else self.square_size * 0.75
+        self.aruco_dict = str(aruco_dict)
+        self.min_corners = max(4, int(min_corners))
+        self._board = None
+        self._detector = None
+
+    def _ensure(self):
+        if self._detector is not None:
+            return
+        import cv2
+        dictionary_id = getattr(cv2.aruco, self.aruco_dict, None)
+        if dictionary_id is None:
+            raise CalibrationError(f'unknown ArUco dictionary {self.aruco_dict!r}')
+        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
+        self._board = cv2.aruco.CharucoBoard(self.squares, self.square_size,
+                                             self.marker_size, dictionary)
+        self._detector = cv2.aruco.CharucoDetector(self._board)
+
+    def object_grid(self) -> np.ndarray:
+        self._ensure()
+        return np.asarray(self._board.getChessboardCorners(), dtype=np.float64)
+
+    def detect(self, image, K=None, dist=None) -> BoardObservation | None:
+        import cv2
+
+        self._ensure()
+        image = np.asarray(image)
+        gray = image if image.ndim == 2 else cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        corners, ids, _, _ = self._detector.detectBoard(gray)
+        if corners is None or ids is None or len(ids) < self.min_corners:
+            return None
+        index = ids.reshape(-1).astype(int)
+        image_points = corners.reshape(-1, 2).astype(np.float64)
+        object_points = self.object_grid()[index]
+        transform = None
+        if K is not None:
+            K = np.asarray(K, dtype=np.float64).reshape(3, 3)
+            dist = np.zeros(5) if dist is None else np.asarray(dist, dtype=np.float64).reshape(-1)
+            ok, rvec, tvec = cv2.solvePnP(object_points, image_points, K, dist,
+                                          flags=cv2.SOLVEPNP_ITERATIVE)
+            if ok:
+                transform = np.eye(4)
+                transform[:3, :3] = cv2.Rodrigues(rvec)[0]
                 transform[:3, 3] = np.asarray(tvec).reshape(3)
         return BoardObservation(object_points=object_points, image_points=image_points,
                                 T_cam_board=transform,

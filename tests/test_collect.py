@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -85,6 +86,33 @@ def test_recorder_robot_only(tmp_path):
                        .read_text(encoding='utf-8').strip())
     assert entry['cameras'] == []
     assert entry['frames'] == 3
+
+
+def _spooled_frames(recorder) -> list[Path]:
+    return sorted(recorder.session.glob('take_*/0*.npz'))
+
+
+def _spool_compress_types(tmp_path, **kwargs) -> set:
+    schema = DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(), fps=10)
+    recorder = EpisodeRecorder(tmp_path, schema, export=export_manifest, **kwargs)
+    recorder.start('spool task')
+    for _ in range(3):
+        assert recorder.capture(np.zeros(7), np.zeros(7))
+    recorder.save(success=True)
+    recorder.close()
+    frames = _spooled_frames(recorder)
+    assert frames, 'no spooled frames'
+    with zipfile.ZipFile(frames[0]) as archive:
+        return {item.compress_type for item in archive.infolist()}
+
+
+def test_spool_frames_are_uncompressed_by_default(tmp_path):
+    # Deflating a 640x480 frame costs ~50 ms and starves the spool queue at 30 Hz.
+    assert _spool_compress_types(tmp_path) == {zipfile.ZIP_STORED}
+
+
+def test_spool_frames_compress_when_requested(tmp_path):
+    assert _spool_compress_types(tmp_path, compress=True) == {zipfile.ZIP_DEFLATED}
 
 
 def test_episode_collector_robot_only(tmp_path):
@@ -246,3 +274,54 @@ def test_split_camera_frames_with_mock_camera():
     assert depth['wrist_camera_K'].shape == (3, 3)
     assert depth['wrist_camera_T_world_camera'].shape == (4, 4)
     camera.close()
+
+
+def test_master_slave_sampling_writes_episode(tmp_path):
+    from robot_toolkit.examples import piper_collect
+
+    exit_code = piper_collect.main([
+        '--source', 'master-slave', '--mock', '--auto-record',
+        '--sample-seconds', '0.4', '--fps', '10',
+        '--dataset-root', str(tmp_path), '--repo-id', 'local/ms_test',
+        '--export', 'manifest',
+    ])
+    assert exit_code == 0
+    takes = list(Path(tmp_path).rglob('take.json'))
+    assert len(takes) == 1
+    frames = sorted(takes[0].parent.glob('*.npz'))
+    assert len(frames) >= 2
+
+
+def test_capture_state_uses_reported_gripper_width(tmp_path):
+    from types import SimpleNamespace
+
+    schema = DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(), fps=10)
+    collector = EpisodeCollector(tmp_path, schema, robot=SimpleNamespace(),
+                                 export=export_manifest, fps=10,
+                                 min_interval_s=0.0)
+    collector.start('gripper width')
+    for _ in range(2):
+        state = SimpleNamespace(q=np.zeros(6), extra={'gripper_width': 0.03}, t=0.0)
+        assert collector.capture_state(state=state)
+    collector.stop(success=True)
+    collector.close()
+    path = sorted(Path(tmp_path).rglob('*.npz'))[0]
+    with np.load(path) as data:
+        assert data['observation_state'][-1] == pytest.approx(0.03)
+        assert data['action'][-1] == pytest.approx(0.03)
+
+
+def test_schema_feature_name_styles():
+    unit = DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(), fps=30)
+    assert unit.state_names[0] == 'joint_1.rad'
+    assert unit.state_names[-1] == 'piper_gripper.width_m'
+
+    pos = DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(), fps=30,
+                                  name_style='pos')
+    assert pos.state_names == [f'joint_{index}.pos' for index in range(1, 7)] + ['gripper.pos']
+    # Labels only: feature shape and order are identical to the unit style.
+    assert pos.dim == unit.dim
+    assert pos.features()['action']['shape'] == unit.features()['action']['shape']
+
+    with pytest.raises(DatasetError):
+        DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(), name_style='bogus')

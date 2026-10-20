@@ -10,3 +10,5 @@ build/
 dist/
 .DS_Store
 Thumbs.db
+# local interpreter pointer for run.bat (machine-specific path)
+.robot_toolkit_python

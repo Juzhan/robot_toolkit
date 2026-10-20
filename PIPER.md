@@ -57,8 +57,189 @@ python -m robot_toolkit.cli piper-check --model piper_x
 python -m robot_toolkit.cli piper-check --model piper_x --mock
 ```
 
-输出包括固件、关节角、TCP、使能状态、夹爪宽度和 SDK 配置。`piper-check` 不会使能、
-不会发运动指令。
+输出包括固件、关节角、TCP、使能状态、夹爪宽度和 SDK 配置。`piper-check` 以
+`configure_on_connect=False` 连接：**不使能、不设速度、不设运动模式、不写 TCP 偏移，
+全程不发送任何报文**。主从手臂并线时这一点很关键——早期的 `connect()` 会发 `0x151`
+（`ctrl_mode=0x01` CAN 指令控制 + `MOVE J`），总线上两台手臂都会收到，会被拉出
+主从示教、表现为拖不动。
+
+## 总线扫描（只监听，不发送）
+
+主从手臂并到同一个接线端子时，它们共用 **1 个 CAN 适配器 / 1 个 channel**，
+所以适配器数量不代表手臂数量。要看总线上到底有几台手臂，用被动监听：
+
+```powershell
+# 监听 3 秒（默认），列出总线上出现的 CAN ID、帧率和估计在线手臂数
+python -m robot_toolkit.cli piper-scan
+
+# 指定 channel / 监听时长 / 落盘
+python -m robot_toolkit.cli piper-scan --channel 0 --seconds 5 --json scan.json
+```
+
+判定规则（基于 Piper 固定仲裁 ID）：
+
+| 观测 | 含义 |
+| --- | --- |
+| `0x155-0x157` | 主臂（leader）正在广播关节目标，主从示教模式在跑 |
+| `0x251-0x256` / `0x261-0x266` | 从臂电机/驱动器高速与低速反馈 |
+| `0x2A1-0x2A7` | 从臂状态、法兰位姿、关节角 |
+| `0x2A8` | 夹爪反馈 |
+| `0x1C0-0x1C3` | Revo2 灵巧手反馈（状态/手指位置/速度/电流） |
+
+只有 `0x155-0x157` 与从臂反馈同时出现才算 2 台手臂。两台手臂共用同一组 CAN ID 时
+不会出现额外 ID，而是**帧率叠加**（例如 `0x2A1` 从 200 Hz 变成约 400 Hz），`piper-scan`
+会据此提示可能有第二台手臂。一条帧都收不到时，先查适配器枚举（`adapters` 字段）
+和 CAN_H/CAN_L 线序、1 Mbps 波特率。`piper-scan` 全程不发送任何报文。
+
+## 恢复主从示教（0x470）
+
+如果两台手臂被切到了 CAN 指令控制模式（`0x2A1` 的 byte0 = `0x01`、byte2 = `0x01`
+即 `MOVE J`），表现为拖不动、示教无效，按下面顺序恢复：
+
+1. 先托住从臂，两台手臂断电，等 10 秒再上电——重启会清掉 `ctrl_mode`。
+2. 上电后仍拖不动，就单独配置联动角色（`0x470` 是广播帧，两台并线都会收到，
+   所以一次只给一台手臂上电）：
+
+```powershell
+# 只给主臂上电
+python -m robot_toolkit.cli piper-linkage --role leader --yes
+# 断电，只给从臂上电
+python -m robot_toolkit.cli piper-linkage --role follower --yes
+```
+
+`0xFA` = 示教输入臂（Leader，零力拖动），`0xFC` = 运动输出臂（Follower）。该命令只发
+一帧 `0x470`，不会像 `connect()` 那样顺带发 `0x151`。
+
+3. 验证：`piper-scan` 应看到 `0x155-0x157`（主臂关节广播），`arms_estimate` 变成 2。
+
+## 主从示教直接采样（不发送任何报文）
+
+主从模式由手臂自己完成随动，宿主程序只负责**读**和**存**：
+
+```powershell
+# 空格=开始/结束一条 episode，x=丢弃，q=退出
+python -m robot_toolkit.examples.piper_collect --source master-slave
+
+# 带腕部相机 + 固定 5 秒时长（脚本化/无键盘时用 --auto-record）
+python -m robot_toolkit.examples.piper_collect `
+  --source master-slave --auto-record --sample-seconds 5 `
+  --fps 15 --cameras-json cameras.json `
+  --dataset-root outputs/piper_dataset --repo-id local/piper_task
+```
+
+`cameras.json` 形如：
+
+```json
+[{"kind": "opencv", "name": "wrist_camera", "width": 640, "height": 480, "fps": 30}]
+```
+
+要点：
+
+- 该模式用 `configure_on_connect=False` 连接，**不发 `0x151`、不使能、不查固件**，
+  主从状态不受影响；采样前后都可以用 `piper-scan` 确认 `0x155-0x157` 仍在。
+- `observation.state` = 从臂实际关节 + 夹爪宽度；`action` = 主臂通过 `0x155-0x157`
+  广播的关节角（没有主臂广播时退化为等于 observation）。没有仿真，不会额外 import
+  不需要的 SDK。
+- 采样节奏由循环本身按 `--fps` 控速，实测 15 Hz 目标下约 14.9 Hz。
+- 腕部相机的实际出图帧率由相机自身决定；`fps` 低于相机帧率时会重复取最新帧。
+
+## 用配置文件启动（推荐）
+任务配置由 `task_runner` 驱动，一个 JSON 就够。仓库外的工作区里已放好
+`configs/tasks/piper_master_slave.json`。日常直接用 `run.bat`
+（跨平台等价 `python run.py`），它会选好解释器和包路径：
+
+```powershell
+run.bat --list                                   # 列出任务
+run.bat piper_master_slave                       # 直接跑：空格开始/结束，q 退出（不限时长）
+run.bat piper_master_slave master_slave --dry-run  # 只解析，不连硬件
+```
+
+默认和 UR5 的 `collect` 一样，是**一条命令就开录**：链路就绪后立即录制，按空格结束并保存
+（再按空格录下一条），不设时长、不设帧数上限。限制全部是显式可选项：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `master_slave.auto_record` | `true` | 启动即录；设 `false` 改成按空格才开始 |
+| `master_slave.sample_seconds` | `0` | `>0` 才启用「到点自动结束」 |
+| `collect.max_frames` | `0` | `0` = 单条 episode 不限帧数 |
+| `collect.compress` | `false` | spool 的 `.npz` 帧是否压缩。默认原始帧（~1.5 MB/帧、~3 ms/帧）；压缩只省约 5% 空间却慢 ~20 倍，30 Hz 会「write queue is full」中断 |
+
+`run.bat` 的解释器优先级：`ROBOT_TOOLKIT_PYTHON` → 同目录或上级目录的
+`.robot_toolkit_python` 文件 → PATH 里的 `py`/`python`。要用 LeRobot 导出就指向装了
+`lerobot` 的环境。在工作区根目录放一份 `.robot_toolkit_python`，工作区根目录和仓库里的
+`run.bat` 都能用到。
+等价的模块命令是 `python -m robot_toolkit.task_runner <task> [mode]`。
+
+关键字段：
+
+```json
+{
+  "mode": "master_slave",
+  "robot": {
+    "kind": "agx_piper", "name": "piper_x",
+    "options": {
+      "interface": "auto", "channel": "auto", "firmware": "default",
+      "enable_on_connect": false,      // 只读
+      "configure_on_connect": false,   // 不写 0x151
+      "has_gripper": true
+    },
+    "safety": false
+  },
+  "gripper": {"kind": "none"},
+  "collect": {
+    "repo_id": "local/piper_master_slave", "fps": 30.0, "export": "lerobot",
+    "feature_names": "unit",
+    "cameras": [{"kind": "realsense", "name": "wrist_camera",
+                 "width": 640, "height": 480, "fps": 30, "depth": true}]
+  },
+  "master_slave": {"fps": 30.0}
+}
+```
+
+`master_slave` 段只写 `fps` 就是操作员控制模式（空格开始/结束、q 退出、不限时长）。
+`sample_seconds > 0` 会自动开录并在到点后收尾，仅供无人值守/测试；`collect.max_frames`
+同理，`0` 表示单条 episode 不设帧数上限。`fps` 建议与相机帧率对齐（腕部相机 30 fps
+→ 30 Hz）。
+
+`master_slave` 模式会强制 `enable_on_connect=false` / `configure_on_connect=false`，
+即使 JSON 里写反了也不会往总线写帧。`export` 用 `lerobot` 需要装有 LeRobot 的环境，
+否则改成 `"manifest"`。
+
+## 标定（棋盘格，配置驱动）
+
+仓库自带 `configs/tasks/piper_calibrate.json`，`mode` 是 `calibrate`：
+
+```powershell
+run.bat piper_calibrate      # 空格=采集一帧，s=求解并保存，q=退出
+```
+
+```json
+"calibrate": {
+  "kind": "handeye",        // handeye | intrinsics | both
+  "eye": "eye_in_hand",     // eye_in_hand | eye_to_hand（腕部相机用 eye_in_hand）
+  "camera": "wrist_camera",
+  "pattern": [9, 6],        // 棋盘内角点数，不是方格数
+  "square_size": 0.025,     // 米
+  "min_samples": 8,
+  "path": "",               // 空 = outputs/robot_tasks/<slug>/calibration.json
+  "apply": false
+}
+```
+
+- 主从联动下摆位 = 拖主臂，程序只读从臂 TCP + 腕部相机，**不发运动指令**；
+- `handeye` 需要 `robot.options.tcp_offset` 正确（否则外参偏一个固定量）；
+- `intrinsics` 只采棋盘视角、不读机器人位姿；
+- 输出为 `CalibrationStore` JSON，`python -m robot_toolkit.cli calib-show <path>` 可查看摘要；
+- 标定板可用 `assets/board_charuco_300dpi.pdf`（ChArUco）或任意 9×6 棋盘，按实际内角点改 `pattern`。
+
+需要**全自动扫描**时用 `configs/tasks/piper_calibrate_auto.json`（单臂、主机可控，会移动机械臂）：
+
+```powershell
+run.bat piper_calibrate_auto --yes
+```
+
+逐点 `move_j` → 停 `settle_s` → 检测棋盘 → 攒够样本自动求解；检测失败的位姿自动跳过。
+主从硬件联动下**不能**用（发运动指令会打断联动），只能用上面的手动摆位版。
 
 ## 控制
 
@@ -218,25 +399,26 @@ python -m robot_toolkit.examples.piper_collect --source teleop --cameras-json ca
 `task_runner.py` 读取任务 JSON：`robot` 决定用 Piper、UR5e、MuJoCo 还是 mock，
 `gripper` 决定夹爪后端；入口本身不判断机器人。任务 JSON 放在应用层，用
 `--config <path>` 直接指定（或用 `ROBOT_TASK_CONFIG_DIR` 指定配置目录后按任务名
-查找）：
+查找）。下面的 `python -m robot_toolkit.task_runner` 都可以换成更短的
+`run.bat`（Linux/macOS 用 `python run.py`），参数完全一致：
 
 ```powershell
 # 列出可用任务
-python -m robot_toolkit.task_runner --list
+run.bat --list
 
 # 只看解析结果，不接硬件、不动机器人
-python -m robot_toolkit.task_runner --config task.json --dry-run
+run.bat --config task.json --dry-run
 
 # 推荐：常驻 Joy-Con 会话
 # B 开始示教 / A 保存 / ZR 切夹爪 / X×2 回放并采集 / Y×2 删除上一条
-python -m robot_toolkit.task_runner --config task.json session
+run.bat --config task.json session
 
 # 单次调试命令（不使用常驻会话）
-python -m robot_toolkit.task_runner --config task.json teach
-python -m robot_toolkit.task_runner --config task.json collect
+run.bat --config task.json teach
+run.bat --config task.json collect
 
 # 不接硬件跑通整个流程
-python -m robot_toolkit.task_runner --config task.json collect --mock --yes
+run.bat --config task.json collect --mock --yes
 ```
 
 任务 JSON 不需要按操作系统分支，跨平台差异已经收在 CAN / 串口 / 相机适配器里。

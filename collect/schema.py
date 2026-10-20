@@ -15,6 +15,22 @@ from ..core.conventions import (CAMERA_FRAME_CONVENTION, DEPTH_ENCODING,
                                 EXTRINSIC_CONVENTION, RobotSpec)
 from ..errors import DatasetError
 
+_NAME_STYLES = ('unit', 'pos')
+
+
+def _styled_names(robot: RobotSpec, style: str) -> list[str]:
+    """Per-dimension labels for state/action; values and order never change."""
+    names = robot.state_names
+    if style == 'unit':
+        return list(names)
+    # LeRobot community style: the motor name plus ``.pos``, with the gripper
+    # simply ``gripper.pos``.  ``joint_1.rad`` -> ``joint_1.pos``.
+    styled = [f'{name.rsplit(".", 1)[0]}.pos' if '.' in name else f'{name}.pos'
+              for name in names]
+    if robot.gripper is not None and styled:
+        styled[-1] = 'gripper.pos'
+    return styled
+
 
 @dataclass(frozen=True)
 class CameraSpec:
@@ -56,11 +72,18 @@ class DatasetSchema:
     robot_type: str = ''
     repo_id: str = 'local/robot_toolkit'
     require_images: bool = True
+    # ``unit`` keeps the explicit unit suffix (joint_1.rad, piper_gripper.width_m);
+    # ``pos`` follows the LeRobot motor naming used by most public datasets
+    # (joint_1.pos ... gripper.pos).  Labels only: values and order are identical.
+    name_style: str = 'unit'
 
     def __post_init__(self):
         self.cameras = tuple(self.cameras)
         if not self.robot_type:
             self.robot_type = self.robot.name
+        if self.name_style not in _NAME_STYLES:
+            raise DatasetError(f'name_style must be one of {_NAME_STYLES}, '
+                               f'got {self.name_style!r}')
         # A schema with no cameras can only record robot state/action.  Do not
         # require image keys that no camera can provide.
         if not self.cameras:
@@ -69,11 +92,11 @@ class DatasetSchema:
     # ------------------------------------------------------------------ names
     @property
     def state_names(self) -> list[str]:
-        return self.robot.state_names
+        return _styled_names(self.robot, self.name_style)
 
     @property
     def action_names(self) -> list[str]:
-        return self.robot.state_names
+        return _styled_names(self.robot, self.name_style)
 
     @property
     def dim(self) -> int:

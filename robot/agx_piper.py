@@ -66,6 +66,10 @@ class AgxPiperConfig:
     firmware: str = 'auto'
     speed_percent: int = 50
     enable_on_connect: bool = True
+    # ``False`` keeps the connection read-only: no speed/motion-mode/TCP-offset
+    # frames are sent, which matters on a shared master-slave bus where a write
+    # reaches both arms and can drop them out of teach mode.
+    configure_on_connect: bool = True
     has_gripper: bool = True
     gripper_force_n: float = 1.0
     gripper_max_width: float = 0.08
@@ -222,7 +226,9 @@ class AgxPiperRobot(RobotBackend):
 
             # Firmware auto-detection: reconnect once with the profile returned
             # by the controller (Piper firmware selects the driver variant).
-            if str(self.config.firmware).lower() == 'auto':
+            # The query itself transmits (ArmMsgReqFirmware), so a read-only
+            # connection must skip it.
+            if str(self.config.firmware).lower() == 'auto' and self.config.configure_on_connect:
                 try:
                     info = self._read_firmware()
                     version = str(info.get('software_version', '') or '')
@@ -245,32 +251,37 @@ class AgxPiperRobot(RobotBackend):
                 self._robot.set_joint_limits_enabled(True)
             except Exception:
                 pass
-            try:
-                self._robot.set_speed_percent(int(np.clip(self.config.speed_percent, 0, 100)))
-            except Exception:
-                pass
-            if any(abs(float(value)) > 1e-9 for value in self.config.tcp_offset):
+            # Everything below transmits CAN frames (0x151 mode control etc.).
+            # On a master-slave pair both arms share one bus, so a diagnostic
+            # connection must not write: it would pull both arms out of
+            # leader/follower teaching and make them hold position.
+            if self.config.configure_on_connect:
                 try:
-                    self._robot.set_tcp_offset([float(value) for value in self.config.tcp_offset])
+                    self._robot.set_speed_percent(int(np.clip(self.config.speed_percent, 0, 100)))
                 except Exception:
                     pass
-            if self.config.enable_on_connect:
-                self.enable()
-            # ``move_j`` otherwise sends the motion-mode command on every
-            # 50 Hz replay frame, which adds latency and makes Piper playback
-            # visibly stutter.  Disable auto switching and set J mode once.
-            try:
-                self._robot.set_auto_set_motion_mode_enabled(False)
-                self._robot.set_motion_mode('j')
-                self._auto_motion_mode = False
-                self._motion_mode = 'j'
-            except Exception:
-                self._auto_motion_mode = True
-                self._motion_mode = ''
+                if any(abs(float(value)) > 1e-9 for value in self.config.tcp_offset):
+                    try:
+                        self._robot.set_tcp_offset([float(value) for value in self.config.tcp_offset])
+                    except Exception:
+                        pass
+                if self.config.enable_on_connect:
+                    self.enable()
+                # ``move_j`` otherwise sends the motion-mode command on every
+                # 50 Hz replay frame, which adds latency and makes Piper playback
+                # visibly stutter.  Disable auto switching and set J mode once.
                 try:
-                    self._robot.set_auto_set_motion_mode_enabled(True)
+                    self._robot.set_auto_set_motion_mode_enabled(False)
+                    self._robot.set_motion_mode('j')
+                    self._auto_motion_mode = False
+                    self._motion_mode = 'j'
                 except Exception:
-                    pass
+                    self._auto_motion_mode = True
+                    self._motion_mode = ''
+                    try:
+                        self._robot.set_auto_set_motion_mode_enabled(True)
+                    except Exception:
+                        pass
             self._connected = True
             return self
         except Exception:
@@ -421,6 +432,27 @@ class AgxPiperRobot(RobotBackend):
             return getattr(self._robot, name)()
         except Exception:
             return default
+
+    def leader_joint_angles(self):
+        """Read the leader arm joints already broadcast on the bus (read-only).
+
+        In master-slave teach mode the leader streams its joints on 0x155-0x157.
+        This returns them without calling ``freedrive()``, which would send a
+        0x470 broadcast that every arm on the shared bus receives.  Returns
+        ``None`` when no leader is broadcasting.
+        """
+        if self.mock:
+            return None
+        if self._robot is None:
+            raise RobotUnavailable('Piper SDK is not connected')
+        try:
+            values = self._msg_value(self._robot.get_leader_joint_angles())
+        except Exception:
+            return None
+        if values is None:
+            return None
+        q = np.asarray(values, dtype=float).reshape(-1)
+        return q if q.shape == (self.spec.dof,) else None
 
     # ---------------------------------------------------------------- motion
     def enable(self, timeout: float | None = None) -> bool:
@@ -717,3 +749,243 @@ class AgxPiperRobot(RobotBackend):
         return (f'AgxPiperRobot(model={self.config.model!r}, '
                 f'interface={self._interface()!r}, channel={self._channel()!r}, '
                 f'mock={self.mock})')
+
+
+# ---------------------------------------------------------------- bus scanning
+# Piper uses fixed arbitration IDs on the shared bus: a leader arm in
+# master-slave teach mode broadcasts joint targets on 0x155..0x157, while a
+# follower reports motor/driver state on 0x251..0x256 / 0x261..0x266 and arm
+# state on 0x2A1..0x2A7.
+PIPER_CAN_LABELS = {
+    0x155: 'leader_joint_12',
+    0x156: 'leader_joint_34',
+    0x157: 'leader_joint_56',
+    0x181: 'cpv_response_j1',
+    0x182: 'cpv_response_j2',
+    0x183: 'cpv_response_j3',
+    0x184: 'cpv_response_j4',
+    0x185: 'cpv_response_j5',
+    0x186: 'cpv_response_j6',
+    0x251: 'motor_state_j1',
+    0x252: 'motor_state_j2',
+    0x253: 'motor_state_j3',
+    0x254: 'motor_state_j4',
+    0x255: 'motor_state_j5',
+    0x256: 'motor_state_j6',
+    0x261: 'driver_state_j1',
+    0x262: 'driver_state_j2',
+    0x263: 'driver_state_j3',
+    0x264: 'driver_state_j4',
+    0x265: 'driver_state_j5',
+    0x266: 'driver_state_j6',
+    0x2A1: 'arm_status',
+    0x2A2: 'end_pose_xy',
+    0x2A3: 'end_pose_zrx',
+    0x2A4: 'end_pose_ryrz',
+    0x2A5: 'joint_state_12',
+    0x2A6: 'joint_state_34',
+    0x2A7: 'joint_state_56',
+    0x2A8: 'gripper',
+    0x473: 'motor_angle_limit_max_spd',
+    0x476: 'resp_set_instruction',
+    0x478: 'end_vel_acc_param',
+    0x47B: 'crash_protection_rating',
+    0x1C0: 'revo2_hand_status',
+    0x1C1: 'revo2_finger_pos',
+    0x1C2: 'revo2_finger_spd',
+    0x1C3: 'revo2_finger_current',
+}
+
+# Single-arm feedback rates reported by the Piper firmware. Two arms wired to
+# the same terminal share arbitration IDs, so a second arm shows up as roughly
+# doubled rates rather than as extra IDs.
+PIPER_NOMINAL_HZ = ((0x251, 0x256, 100.0), (0x261, 0x266, 20.0), (0x2A1, 0x2A7, 200.0))
+
+
+def _scan_interface(value: str) -> str:
+    text = str(value or '').strip()
+    return _default_interface() if text.lower() in ('', 'auto') else text
+
+
+def _scan_channel(value: str) -> str:
+    text = str(value or '').strip()
+    return _default_channel() if text.lower() in ('', 'auto') else text
+
+
+def scan_piper_can(interface: str = 'auto', channel: str = 'auto',
+                   bitrate: int = 1_000_000, seconds: float = 3.0) -> dict:
+    """Passively listen on a Piper CAN bus and report the arbitration IDs seen.
+
+    Nothing is transmitted, so the arm stays untouched: this only counts the
+    feedback frames that already exist on the bus. Useful to tell a wiring or
+    adapter problem (zero frames) from a healthy bus, and to see whether a
+    leader arm is broadcasting (0x155..0x157) next to a follower.
+    """
+    try:
+        import can
+    except ImportError as exc:
+        raise ConnectionFailed(
+            '未安装 python-can。请执行：\n'
+            '  pip install python-can\n'
+            'Windows 还需要 python-can-agx-cando 插件。') from exc
+
+    iface = _scan_interface(interface)
+    chan = _scan_channel(channel)
+    adapters = None
+    try:
+        adapter_list = can.detect_available_configs(interfaces=[iface])
+        adapters = len(adapter_list)
+    except Exception:
+        adapters = None
+
+    try:
+        bus = can.Bus(interface=iface, channel=chan, bitrate=int(bitrate),
+                      receive_own_messages=False, local_loopback=False)
+    except Exception as exc:
+        raise ConnectionFailed(
+            f'无法打开 CAN 总线（interface={iface!r}, channel={chan!r}, '
+            f'bitrate={int(bitrate)}）：{type(exc).__name__}: {exc}') from exc
+
+    budget = max(0.2, float(seconds))
+    frames = 0
+    stats: dict[int, dict] = {}
+    try:
+        deadline = time.monotonic() + budget
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            message = bus.recv(timeout=min(0.2, remaining))
+            if message is None:
+                continue
+            frames += 1
+            can_id = int(message.arbitration_id)
+            record = stats.get(can_id)
+            if record is None:
+                record = stats[can_id] = {
+                    'id': can_id,
+                    'label': PIPER_CAN_LABELS.get(can_id, 'unknown'),
+                    'count': 0,
+                    'first': float(message.timestamp),
+                    'last': float(message.timestamp),
+                    'dlc': int(message.dlc),
+                    'data': bytes(message.data),
+                }
+            record['count'] += 1
+            record['last'] = float(message.timestamp)
+    finally:
+        bus.shutdown()
+
+    nodes = []
+    for can_id in sorted(stats):
+        record = stats[can_id]
+        span = record['last'] - record['first']
+        nodes.append({
+            'id': can_id,
+            'hex': f'0x{can_id:03X}',
+            'label': record['label'],
+            'count': record['count'],
+            # count-1 intervals over the observed span; a single frame has no rate
+            'hz': round((record['count'] - 1) / span, 1) if span > 1e-6 else None,
+            'dlc': record['dlc'],
+            'data': record['data'].hex(' '),
+        })
+
+    leader = any(0x155 <= node['id'] <= 0x157 for node in nodes)
+    follower = any(0x2A1 <= node['id'] <= 0x2A7 or 0x251 <= node['id'] <= 0x256
+                   or 0x261 <= node['id'] <= 0x266 for node in nodes)
+    notes = []
+    duplicated = [node['hex'] for node in nodes
+                  for low, high, nominal in PIPER_NOMINAL_HZ
+                  if low <= node['id'] <= high and node['hz'] and node['hz'] >= 1.6 * nominal]
+    if leader and follower:
+        arms = 2
+        notes.append('同时看到 0x155-0x157（主臂关节广播）和从臂反馈：总线上是主从两台手臂')
+    elif follower:
+        arms = 1
+        notes.append('只看到从臂反馈，没有 0x155-0x157 主臂广播：总线上 1 台手臂')
+    elif leader:
+        arms = 1
+        notes.append('只看到 0x155-0x157 主臂广播，没有从臂反馈：从臂可能未上电或未接好')
+    else:
+        arms = 0
+        notes.append('没有收到任何 Piper 已知反馈 ID：检查适配器、CAN_H/CAN_L 线序和 1 Mbps 波特率')
+    if duplicated:
+        arms = max(arms, 2)
+        notes.insert(0, f'{"、".join(sorted(set(duplicated)))} 的帧率约为单臂标称值的两倍：'
+                        '可能有第二台手臂复用了同一组 CAN ID')
+    if not nodes:
+        notes.append('主从手臂并到同一个接线端子只占用 1 个 CAN 适配器/1 个 channel，'
+                     '适配器数量不等于手臂数量；手臂数量只能靠总线上的反馈帧判断')
+    if adapters in (0, None):
+        notes.append(f'{iface} 没有枚举到 USB-CAN 适配器，先确认适配器已插好并被系统识别')
+
+    return {
+        'interface': iface,
+        'channel': chan,
+        'bitrate': int(bitrate),
+        'adapters': adapters,
+        'seconds': budget,
+        'frames': frames,
+        'nodes': nodes,
+        'leader_broadcast': leader,
+        'follower_feedback': follower,
+        'arms_estimate': arms,
+        'notes': notes,
+    }
+
+
+PIPER_LINKAGE_IDS = {'leader': 0xFA, 'follower': 0xFC}
+
+
+def set_piper_linkage(role: str, interface: str = 'auto', channel: str = 'auto',
+                      bitrate: int = 1_000_000) -> dict:
+    """Send a single 0x470 frame to (re)enter master-slave teach mode.
+
+    ``leader`` (0xFA) makes the arm a zero-force drag input arm, ``follower``
+    (0xFC) makes it mirror the leader. The frame is broadcast, so when a
+    master-slave pair shares one terminal both arms receive it: power only the
+    arm you want to configure while recovering a pair.
+
+    Only 0x470 is transmitted here; no mode-control (0x151) frame is sent, so
+    the arm is not pulled into CAN command mode the way ``connect()`` does.
+    """
+    try:
+        import can
+    except ImportError as exc:
+        raise ConnectionFailed(
+            '未安装 python-can。请执行：\n'
+            '  pip install python-can\n'
+            'Windows 还需要 python-can-agx-cando 插件。') from exc
+
+    key = str(role or '').strip().lower()
+    if key not in PIPER_LINKAGE_IDS:
+        raise ValueError(f"role 只能是 'leader' 或 'follower'，收到 {role!r}")
+    iface = _scan_interface(interface)
+    chan = _scan_channel(channel)
+    payload = bytes([PIPER_LINKAGE_IDS[key], 0, 0, 0, 0, 0, 0, 0])
+
+    try:
+        bus = can.Bus(interface=iface, channel=chan, bitrate=int(bitrate),
+                      receive_own_messages=False, local_loopback=False)
+    except Exception as exc:
+        raise ConnectionFailed(
+            f'无法打开 CAN 总线（interface={iface!r}, channel={chan!r}, '
+            f'bitrate={int(bitrate)}）：{type(exc).__name__}: {exc}') from exc
+
+    try:
+        bus.send(can.Message(arbitration_id=0x470, is_extended_id=False,
+                             data=payload, dlc=len(payload)))
+        time.sleep(0.2)
+    finally:
+        bus.shutdown()
+
+    return {
+        'interface': iface,
+        'channel': chan,
+        'bitrate': int(bitrate),
+        'role': key,
+        'can_id': '0x470',
+        'data': payload.hex(' '),
+        'note': '该帧是广播：主从并线的总线上两台手臂都会收到，恢复时请只给目标手臂上电',
+    }

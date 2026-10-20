@@ -19,7 +19,8 @@ def load_json(path) -> dict:
     path = Path(path)
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding='utf-8'))
+    # utf-8-sig: Windows editors/PowerShell often prepend a BOM.
+    return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
 def save_json(path, data) -> Path:

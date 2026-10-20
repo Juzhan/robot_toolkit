@@ -27,7 +27,8 @@ class EpisodeCollector:
 
     def __init__(self, root, schema: DatasetSchema, robot=None, gripper=None,
                  cameras=(), export=export_lerobot, fps: float | None = None,
-                 min_interval_s: float = 0.0, clock=time.monotonic):
+                 min_interval_s: float = 0.0, clock=time.monotonic,
+                 max_frames: int | None = None, compress: bool = False):
         self.schema = schema
         self.robot = robot
         self.gripper = gripper
@@ -35,7 +36,11 @@ class EpisodeCollector:
         self.min_interval_s = max(0.0, float(min_interval_s))
         self.clock = clock
         self._last_capture = -1e9
-        self.recorder = EpisodeRecorder(root, schema, export=export, fps=fps)
+        recorder_kwargs = {'compress': bool(compress)}
+        if max_frames is not None:
+            recorder_kwargs['max_frames'] = int(max_frames)
+        self.recorder = EpisodeRecorder(root, schema, export=export, fps=fps,
+                                        **recorder_kwargs)
         self._started = False
         self._last_state = None
 
@@ -105,7 +110,11 @@ class EpisodeCollector:
             try:
                 width = float(self.gripper.width)
             except Exception:
-                width = state.extra.get('gripper_width')
+                width = None
+        if width is None:
+            # No gripper object: fall back to the width the backend reports,
+            # otherwise ``pack`` substitutes max_width and the dataset is wrong.
+            width = state.extra.get('gripper_width')
         observation = self.schema.observation(state.q, width)
         action_vector = observation if action is None else np.asarray(action, dtype=np.float32)
         images, depth = self._camera_payload(strict=strict_cameras)

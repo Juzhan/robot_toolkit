@@ -137,6 +137,16 @@ class RobotBackend(abc.ABC):
         except Exception:
             return False
 
+    def leader_joint_angles(self):
+        """Joints of an external leader input device, or ``None`` when absent.
+
+        Passive sampling records the robot as ``observation`` and, when a leader
+        device streams its joints, those as ``action``.  Backends without such
+        an input device inherit this no-op instead of the caller sniffing for a
+        robot-specific attribute.
+        """
+        return None
+
     def joints_within_safety(self, joints) -> bool:
         """Best-effort local check; hardware backends may query the controller.
 

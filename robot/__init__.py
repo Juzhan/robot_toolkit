@@ -4,7 +4,8 @@ Importing this package is free: hardware SDKs (``ur_rtde``, ``mujoco``) are
 imported lazily when the corresponding backend is constructed.
 """
 
-from .agx_piper import AgxPiperConfig, AgxPiperRobot
+from .agx_piper import (PIPER_CAN_LABELS, AgxPiperConfig, AgxPiperRobot,
+                        scan_piper_can, set_piper_linkage)
 from .base import Capabilities, RobotBackend, RobotState
 from .mock import MockRobot
 from .safety import SafeRobot
@@ -16,6 +17,9 @@ __all__ = [
     'RobotState',
     'AgxPiperConfig',
     'AgxPiperRobot',
+    'PIPER_CAN_LABELS',
+    'scan_piper_can',
+    'set_piper_linkage',
     'MockRobot',
     'SafeRobot',
     'UrRtdeConfig',

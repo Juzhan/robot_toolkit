@@ -1,0 +1,44 @@
+{
+  "slug": "piper_master_slave",
+  "task": "piper master slave pick",
+  "mode": "master_slave",
+  "name": "",
+  "root": "outputs/robot_tasks",
+  "robot": {
+    "kind": "agx_piper",
+    "name": "piper_x",
+    "options": {
+      "model": "piper_x",
+      "interface": "auto",
+      "channel": "auto",
+      "firmware": "default",
+      "enable_on_connect": false,
+      "configure_on_connect": false,
+      "has_gripper": true
+    },
+    "safety": false
+  },
+  "gripper": {
+    "kind": "none"
+  },
+  "collect": {
+    "dataset_root": "",
+    "repo_id": "local/piper_master_slave",
+    "fps": 30.0,
+    "export": "lerobot",
+    "feature_names": "pos",
+    "cameras": [
+      {
+        "kind": "realsense",
+        "name": "wrist_camera",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "depth": true
+      }
+    ]
+  },
+  "master_slave": {
+    "fps": 30.0
+  }
+}

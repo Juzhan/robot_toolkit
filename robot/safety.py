@@ -47,6 +47,9 @@ class SafeRobot(RobotBackend):
     def protective_stop(self) -> bool:
         return self.inner.protective_stop()
 
+    def leader_joint_angles(self):
+        return self.inner.leader_joint_angles()
+
     def joints_within_safety(self, joints) -> bool:
         return self.inner.joints_within_safety(joints)
 

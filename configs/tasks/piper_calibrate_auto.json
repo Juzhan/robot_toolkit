@@ -1,0 +1,72 @@
+{
+  "slug": "piper_calibrate_auto",
+  "task": "piper wrist camera calibration (auto sweep)",
+  "mode": "calibrate",
+  "name": "",
+  "root": "outputs/robot_tasks",
+  "robot": {
+    "kind": "agx_piper",
+    "name": "piper_x",
+    "options": {
+      "model": "piper_x",
+      "interface": "auto",
+      "channel": "auto",
+      "firmware": "default",
+      "enable_on_connect": true,
+      "configure_on_connect": true,
+      "speed_percent": 20,
+      "has_gripper": true
+    },
+    "limits": {
+      "max_velocity": 1.0,
+      "max_step_rad": 0.8
+    },
+    "safety": true
+  },
+  "gripper": {
+    "kind": "none"
+  },
+  "collect": {
+    "repo_id": "local/piper_calibrate_auto",
+    "fps": 30.0,
+    "export": "manifest",
+    "cameras": [
+      {
+        "kind": "realsense",
+        "name": "wrist_camera",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "depth": true
+      }
+    ]
+  },
+  "calibrate": {
+    "kind": "handeye",
+    "eye": "eye_in_hand",
+    "camera": "wrist_camera",
+    "pattern": [
+      8,
+      5
+    ],
+    "square_size": 0.025,
+    "min_samples": 8,
+    "path": "",
+    "apply": false,
+    "auto": true,
+    "poses": [],
+    "pose_count": 12,
+    "pose_delta_rad": 0.25,
+    "pose_seed": 0,
+    "settle_s": 0.8,
+    "speed_scale": 0.2,
+    "board": "charuco",
+    "squares": [
+      7,
+      10
+    ],
+    "aruco_dict": "DICT_5X5_100",
+    "marker_size": 0.0194,
+    "min_corners": 6
+  }
+}

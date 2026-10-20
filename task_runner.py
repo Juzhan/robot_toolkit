@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
                       exporter_for)
+from .collect.passive import sample_episodes
 from .config import build_dataclass
 from .profiles import build_camera_hub, build_gripper, build_robot
 from .teach import (Replayer, joycon_teach, joint_motion, keyboard_teach,
@@ -40,7 +41,8 @@ ROOT = (Path(__file__).resolve().parents[2]
         if (Path(__file__).resolve().parents[2] / 'configs').exists()
         else _PACKAGE_ROOT)
 DEFAULT_ROOT = 'outputs/robot_tasks'
-MODES = ('teach', 'replay', 'collect', 'teach_collect', 'export', 'session')
+MODES = ('teach', 'replay', 'collect', 'teach_collect', 'export', 'session',
+         'master_slave', 'calibrate')
 
 
 @dataclass
@@ -77,6 +79,17 @@ class CollectOptions:
     fps: float = 10.0
     export: str = 'lerobot'
     cameras: list = field(default_factory=list)
+    # Per-episode frame cap; 0 (default) means no cap.  Set it explicitly when a
+    # bounded episode is wanted, e.g. 18000 frames at 30 Hz = 10 minutes.
+    max_frames: int = 0
+    # Per-dimension labels: 'unit' (joint_1.rad, piper_gripper.width_m) keeps
+    # explicit units; 'pos' follows LeRobot's motor naming (joint_1.pos ...
+    # gripper.pos).  Labels only, values and column order never change.
+    feature_names: str = 'unit'
+    # Compress the spooled .npz frames.  Off (default) because deflate costs
+    # ~50 ms per 640x480 RGB+depth frame and cannot keep up with a 30 Hz camera;
+    # turn it on only when disk space matters more than sustained frame rate.
+    compress: bool = False
 
 
 @dataclass
@@ -88,6 +101,60 @@ class SessionOptions:
     double_press_timeout_s: float = 8.0
     replay_speed_scale: float | None = None
     auto_replay: bool = False
+
+
+@dataclass
+class MasterSlaveOptions:
+    """Passive sampling of a leader/follower pair that teaches itself.
+
+    Nothing is commanded: the follower state is recorded as observation and the
+    leader's broadcast joints as action, so the pair keeps working normally.
+    """
+
+    enabled: bool = True
+    # Recording starts as soon as the link is ready, like the UR5 collect flow;
+    # the operator stops the episode (space) instead of starting it.  No time or
+    # frame limit is applied unless sample_seconds / collect.max_frames are set.
+    auto_record: bool = True
+    sample_seconds: float = 0.0
+    fps: float = 30.0
+
+
+@dataclass
+class CalibrateOptions:
+    """Board-based calibration driven from the task file.
+
+    ``kind``: ``handeye`` (robot/board pose pairs), ``intrinsics`` (board views
+    only) or ``both``.  Hand-eye needs the robot's TCP; intrinsics only needs
+    the camera, but the robot profile is still used when present.
+    """
+
+    kind: str = 'handeye'
+    eye: str = 'eye_in_hand'
+    camera: str = ''
+    # ``chessboard``: ``pattern`` = inner corners.  ``charuco``: ``squares`` =
+    # squares per side of the board in assets/board_charuco_300dpi.pdf.
+    board: str = 'chessboard'
+    pattern: list = field(default_factory=lambda: [9, 6])
+    squares: list = field(default_factory=lambda: [7, 10])
+    aruco_dict: str = 'DICT_5X5_100'
+    marker_size: float = 0.0
+    min_corners: int = 6
+    square_size: float = 0.025
+    min_samples: int = 8
+    path: str = ''
+    apply: bool = False
+    # Automated scanning: the host drives the arm through the pose list, checks
+    # the board at every stop and solves at the end.  Only for a single,
+    # host-controlled arm (not for a hardware-linked leader/follower pair) and
+    # requires --yes because it moves the robot.
+    auto: bool = False
+    poses: list = field(default_factory=list)
+    pose_count: int = 10
+    pose_delta_rad: float = 0.25
+    pose_seed: int = 0
+    settle_s: float = 0.8
+    speed_scale: float = 0.3
 
 
 @dataclass
@@ -105,6 +172,8 @@ class TaskConfig:
     replay: ReplayOptions = field(default_factory=ReplayOptions)
     collect: CollectOptions = field(default_factory=CollectOptions)
     session: SessionOptions = field(default_factory=SessionOptions)
+    master_slave: MasterSlaveOptions = field(default_factory=MasterSlaveOptions)
+    calibrate: CalibrateOptions = field(default_factory=CalibrateOptions)
     source_path: str = ''
 
 
@@ -115,22 +184,49 @@ def _slug(text: str) -> str:
 
 
 def config_dir() -> Path:
+    """Primary task-config directory (first entry of :func:`config_dirs`)."""
+    return config_dirs()[0]
+
+
+def config_dirs() -> list[Path]:
+    """Task-config search path, most specific first.
+
+    ``ROBOT_TASK_CONFIG_DIR`` replaces the list entirely; otherwise the workspace
+    ``configs/tasks`` wins over the demo configs shipped inside the package.
+    """
     override = os.environ.get('ROBOT_TASK_CONFIG_DIR')
-    return Path(override) if override else ROOT / 'configs' / 'tasks'
+    if override:
+        return [Path(override)]
+    # Demo configs ship next to the package code, so a fresh clone can run
+    # ``run.bat piper_master_slave`` without copying anything.
+    code_root = Path(__file__).resolve().parent
+    dirs = [ROOT / 'configs' / 'tasks', code_root / 'configs' / 'tasks']
+    unique = []
+    for path in dirs:
+        if path not in unique:
+            unique.append(path)
+    return unique
 
 
 def discover_configs() -> list[Path]:
-    root = config_dir()
-    return sorted(root.glob('*.json')) if root.exists() else []
+    found: dict[str, Path] = {}
+    for directory in config_dirs():
+        if not directory.exists():
+            continue
+        for path in sorted(directory.glob('*.json')):
+            found.setdefault(path.stem, path)
+    return [found[key] for key in sorted(found)]
 
 
 def resolve_config_path(name: str) -> Path:
     direct = Path(name).expanduser()
     if direct.is_file():
         return direct
-    candidates = [config_dir() / name]
-    if not name.lower().endswith('.json'):
-        candidates.append(config_dir() / f'{name}.json')
+    candidates = []
+    for directory in config_dirs():
+        candidates.append(directory / name)
+        if not name.lower().endswith('.json'):
+            candidates.append(directory / f'{name}.json')
     root = ROOT / DEFAULT_ROOT / 'tasks'
     candidates.extend([root / name / 'task.json',
                        root / name / 'config.json'])
@@ -140,7 +236,7 @@ def resolve_config_path(name: str) -> Path:
     available = ', '.join(path.stem for path in discover_configs()) or '(none)'
     raise FileNotFoundError(
         f'找不到任务配置 {name!r}；可用任务：{available}。'
-        f'默认目录：{config_dir()}')
+        f'搜索目录：{", ".join(str(path) for path in config_dirs())}')
 
 
 def _profile(value, what: str) -> dict:
@@ -157,7 +253,8 @@ def _profile(value, what: str) -> dict:
 
 def load_task_config(name_or_path: str) -> TaskConfig:
     path = resolve_config_path(name_or_path)
-    raw = json.loads(path.read_text(encoding='utf-8'))
+    # utf-8-sig: Windows editors/PowerShell often prepend a BOM.
+    raw = json.loads(path.read_text(encoding='utf-8-sig'))
     task = build_dataclass(TaskConfig, raw)
     task.source_path = str(path)
 
@@ -184,12 +281,28 @@ def load_task_config(name_or_path: str) -> TaskConfig:
         raise ValueError(f'{path}: mode={task.mode!r} 不在 {MODES}')
     if str(task.collect.export).lower() not in ('lerobot', 'manifest'):
         raise ValueError(f'{path}: collect.export 只能是 lerobot 或 manifest')
+    if str(task.collect.feature_names).lower() not in ('unit', 'pos'):
+        raise ValueError(f'{path}: collect.feature_names 只能是 unit 或 pos')
+    task.collect.feature_names = str(task.collect.feature_names).strip().lower()
+    if str(task.calibrate.kind).lower() not in ('handeye', 'intrinsics', 'both'):
+        raise ValueError(f'{path}: calibrate.kind 只能是 handeye / intrinsics / both')
+    if str(task.calibrate.eye).lower() not in ('eye_in_hand', 'eye_to_hand'):
+        raise ValueError(f'{path}: calibrate.eye 只能是 eye_in_hand 或 eye_to_hand')
+    if str(task.calibrate.board).lower() not in ('chessboard', 'charuco'):
+        raise ValueError(f'{path}: calibrate.board 只能是 chessboard 或 charuco')
+    task.calibrate.kind = str(task.calibrate.kind).strip().lower()
+    task.calibrate.eye = str(task.calibrate.eye).strip().lower()
+    task.calibrate.board = str(task.calibrate.board).strip().lower()
+    if len(task.calibrate.pattern) != 2 or float(task.calibrate.square_size) <= 0:
+        raise ValueError(f'{path}: calibrate.pattern 需要 [cols, rows]，square_size > 0')
     if not isinstance(task.collect.cameras, list):
         raise ValueError(f'{path}: collect.cameras 必须是数组')
     if any(not isinstance(item, dict) for item in task.collect.cameras):
         raise ValueError(f'{path}: collect.cameras 的每一项都必须是对象')
     if float(task.collect.fps) <= 0:
         raise ValueError(f'{path}: collect.fps 必须大于 0')
+    if not isinstance(task.collect.compress, bool):
+        raise ValueError(f'{path}: collect.compress 必须是 true 或 false')
     if float(task.teach.rate) <= 0 or float(task.replay.rate) <= 0:
         raise ValueError(f'{path}: teach.rate / replay.rate 必须大于 0')
     return task
@@ -197,7 +310,8 @@ def load_task_config(name_or_path: str) -> TaskConfig:
 
 def print_configs() -> None:
     items = discover_configs()
-    print(f'任务配置目录：{config_dir()}')
+    for directory in config_dirs():
+        print(f'任务配置目录：{directory}')
     if not items:
         print('  (没有 .json 配置文件)')
         return
@@ -427,7 +541,8 @@ def run_export(task: TaskConfig, name: str) -> int:
     try:
         schema = DatasetSchema.for_robot(
             robot.spec, cameras=(), fps=int(round(task.collect.fps)),
-            repo_id=task.collect.repo_id or f'local/{task.slug}')
+            repo_id=task.collect.repo_id or f'local/{task.slug}',
+            name_style=task.collect.feature_names)
         collector = collect_trajectory(
             trajectory, schema, dataset_root(task), task=task.task,
             export=exporter_for(task.collect.export), fps=float(task.collect.fps))
@@ -515,7 +630,8 @@ def run_collect(task: TaskConfig, name: str, mock: bool = False, yes: bool = Fal
         schema = DatasetSchema.for_robot(
             robot.spec, cameras=camera_specs,
             fps=int(round(task.collect.fps)),
-            repo_id=task.collect.repo_id or f'local/{task.slug}')
+            repo_id=task.collect.repo_id or f'local/{task.slug}',
+            name_style=task.collect.feature_names)
         collector = EpisodeCollector(
             target, schema, robot=robot, gripper=gripper, cameras=cameras,
             export=exporter_for(task.collect.export),
@@ -523,7 +639,7 @@ def run_collect(task: TaskConfig, name: str, mock: bool = False, yes: bool = Fal
             # The replay loop already calls the hook at the dataset rate.
             # Do not apply a second wall-clock rate limit here: it would drop
             # frames when replay runs with realtime=False (tests, previews).
-            min_interval_s=0.0)
+            min_interval_s=0.0, compress=bool(task.collect.compress))
         collector.start(task.task, meta={
             'source': 'teach_replay',
             'trajectory': name,
@@ -653,6 +769,264 @@ def _run_session_episode(task: TaskConfig, robot, gripper, collector,
         return False
 
 
+def run_master_slave(task: TaskConfig, mock: bool = False,
+                     dataset_override: str = '') -> int:
+    """Sample a leader/follower pair passively; nothing is commanded."""
+    robot, _gripper, cameras = _build_runtime(task, mock, with_cameras=True)
+    # Fail closed: a profile that still writes configuration frames would pull a
+    # master-slave pair out of teach mode.  The option itself stays where
+    # robot-specific options belong, i.e. in the profile.
+    backend = getattr(robot, 'inner', robot)
+    if getattr(getattr(backend, 'config', None), 'configure_on_connect', False):
+        print('master_slave 需要只读连接：请在 robot.options 里设置 '
+              '"configure_on_connect": false')
+        return 2
+
+    fps = float(task.master_slave.fps or task.collect.fps or 30.0)
+    schema = DatasetSchema.for_robot(
+        robot.spec, cameras=cameras, fps=int(round(fps)),
+        repo_id=task.collect.repo_id or f'local/{task.slug}',
+        name_style=task.collect.feature_names)
+    root = dataset_root(task, dataset_override)
+    print(f'主从采样（只读，不发送任何报文）：{task.task}  fps={fps:g}  '
+          f'相机={schema.camera_names or "无"}  ->  {root}')
+    try:
+        robot.connect()
+        stats = sample_episodes(
+            robot, schema, root, cameras=cameras,
+            export=exporter_for(task.collect.export), fps=fps, task=task.task,
+            auto_record=task.master_slave.auto_record,
+            sample_seconds=task.master_slave.sample_seconds,
+            max_frames=int(task.collect.max_frames or 0),
+            compress=bool(task.collect.compress),
+        )
+    finally:
+        robot.disconnect()
+    print(f'采样结束：episodes={stats["episodes"]} frames={stats["frames"]} '
+          f'rate={stats.get("rate", 0.0):.1f} Hz saved={stats["saved"]} '
+          f'skipped={stats["skipped"]} root={stats["dataset_root"]}')
+    for error in stats.get('export_errors') or ():
+        print(f'导出失败：{error}')
+    return 0 if stats['saved'] else 1
+
+
+def _calibrate_poses(robot, cfg: CalibrateOptions) -> list[list[float]]:
+    """Explicit poses when configured, otherwise a seeded sweep around the start."""
+    if cfg.poses:
+        return [[float(value) for value in pose] for pose in cfg.poses]
+    import numpy as _np
+    state = robot.state()
+    if state.q is None:
+        raise DatasetError('robot has no joint feedback; cannot generate poses')
+    base = _np.asarray(state.q, dtype=float)
+    rng = _np.random.default_rng(int(cfg.pose_seed))
+    count = max(3, int(cfg.pose_count))
+    delta = max(0.02, float(cfg.pose_delta_rad))
+    poses = []
+    for candidate in range(count * 6):
+        if len(poses) >= count:
+            break
+        offset = rng.uniform(-delta, delta, size=base.shape)
+        offset[0] = 0.0                      # keep the base yaw
+        poses.append((base + offset).tolist())
+    return poses
+
+
+def _run_calibrate_auto(robot, camera, detector, session, cfg: CalibrateOptions,
+                        path, need: int, yes: bool) -> int:
+    """Drive the arm through the poses, detect the board, then solve once."""
+    if not yes:
+        print('自动标定会移动机械臂：确认工作区无人、急停在手后加 --yes')
+        return 2
+    try:
+        poses = _calibrate_poses(robot, cfg)
+    except Exception as exc:
+        print(f'无法生成标定位姿：{exc}')
+        return 2
+    print(f'自动标定：{len(poses)} 个位姿，速度 {cfg.speed_scale:g}，'
+          f'每处停 {cfg.settle_s:g}s；目标 ≥{need} 组')
+    try:
+        robot.connect()
+        # ``enable`` lives on the concrete backend; SafeRobot does not proxy it.
+        backend = getattr(robot, 'inner', robot)
+        if hasattr(backend, 'enable'):
+            try:
+                backend.enable()
+            except Exception as exc:
+                print(f'使能失败：{exc}')
+                return 2
+        if not camera.opened:
+            camera.open()
+        for index, pose in enumerate(poses, 1):
+            if getattr(robot, 'protective_stop', lambda: False)():
+                print('检测到保护性停止，终止自动标定')
+                break
+            try:
+                robot.move_j(pose, speed=float(cfg.speed_scale), wait=True)
+            except Exception as exc:
+                print(f'[{index}/{len(poses)}] 运动失败：{exc}（跳过）')
+                continue
+            time.sleep(max(0.0, float(cfg.settle_s)))
+            frame = camera.snapshot()
+            if frame.rgb is None:
+                print(f'[{index}/{len(poses)}] 无图像，跳过')
+                continue
+            if cfg.kind == 'intrinsics':
+                observation = detector.detect(frame.rgb)
+                if observation is not None:
+                    session.views.append(observation.view)
+                    session.images.append(frame.rgb)
+            else:
+                try:
+                    observation = session.capture(image=frame.rgb)
+                except Exception as exc:
+                    print(f'[{index}/{len(poses)}] 采集失败：{type(exc).__name__}: {exc}')
+                    continue
+            if observation is None:
+                print(f'[{index}/{len(poses)}] 没检测到棋盘，跳过')
+                continue
+            count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
+            print(f'[{index}/{len(poses)}] 采集 {count}/{need}')
+            if count >= need:
+                break
+    except KeyboardInterrupt:
+        print('中断')
+    finally:
+        try:
+            camera.close()
+        except Exception:
+            pass
+        try:
+            robot.disconnect()
+        except Exception:
+            pass
+
+    count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
+    if count < 3:
+        print(f'样本不足（{count}），没有保存')
+        return 1
+    summary = session.save(path, camera_name=camera.name, apply=bool(cfg.apply))
+    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+    print(f'已写入 {summary["path"]}')
+    return 0
+
+
+def run_calibrate(task: TaskConfig, mock: bool = False,
+                  dataset_override: str = '', yes: bool = False) -> int:
+    """Collect board observations from the profile and solve the calibration."""
+    from .calibrate import CalibrationSession, ChessboardDetector
+
+    cfg = task.calibrate
+    robot, _gripper, cameras = _build_runtime(task, mock, with_cameras=True)
+    if not cameras:
+        print('calibrate 需要至少一个相机：请在 collect.cameras 里配置')
+        return 2
+    camera = None
+    if cfg.camera:
+        camera = next((item for item in cameras if item.name == cfg.camera), None)
+    elif cameras:
+        camera = cameras[0]
+    if camera is None:
+        print(f'找不到相机 {cfg.camera!r}；可用：{", ".join(c.name for c in cameras)}')
+        return 2
+
+    if cfg.board == 'charuco':
+        from .calibrate import CharucoDetector
+        detector = CharucoDetector(
+            squares=tuple(int(value) for value in cfg.squares),
+            square_size=float(cfg.square_size),
+            marker_size=float(cfg.marker_size),
+            aruco_dict=str(cfg.aruco_dict),
+            min_corners=int(cfg.min_corners),
+        )
+    else:
+        from .calibrate import ChessboardDetector
+        pattern = tuple(int(value) for value in cfg.pattern)
+        detector = ChessboardDetector(pattern=pattern, square_size=float(cfg.square_size))
+    session = CalibrationSession(robot=None if cfg.kind == 'intrinsics' else robot,
+                                 camera=camera, detector=detector, mode=cfg.eye,
+                                 camera_name=camera.name)
+    path = Path(cfg.path) if cfg.path else task_dir(task) / 'calibration.json'
+    need = max(3, int(cfg.min_samples))
+
+    if cfg.auto:
+        return _run_calibrate_auto(robot, camera, detector, session, cfg, path, need, yes)
+
+    print(f'标定：camera={camera.name}  kind={cfg.kind}  eye={cfg.eye}  board={cfg.board}')
+    if cfg.board == 'charuco':
+        print(f'ChArUco {cfg.squares[0]}x{cfg.squares[1]}，方格 {cfg.square_size * 1000:.1f} mm，'
+              f'字典 {cfg.aruco_dict}，目标 ≥{need} 组')
+    else:
+        print(f'棋盘 {cfg.pattern[0]}x{cfg.pattern[1]}，方格 {cfg.square_size * 1000:.1f} mm，'
+              f'目标 ≥{need} 组')
+    print('按键：空格=采集一帧，s=求解并保存，q=退出（不发送任何运动指令）')
+    keys = KeyReader().start()
+    try:
+        if cfg.kind != 'intrinsics':
+            robot.connect()
+        if not camera.opened:
+            camera.open()
+        # The first snapshot right after open() is often empty; wait for a real
+        # frame so the first key press is not wasted.
+        warmed = False
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if camera.snapshot().rgb is not None:
+                warmed = True
+                break
+            time.sleep(0.05)
+        print('相机就绪' if warmed else '相机 5 秒内没有出图，检查连接/曝光',
+              f'  内参 {"有" if camera.intrinsics is not None else "无"}')
+        while True:
+            key = keys.get()
+            if key == ' ':
+                frame = camera.snapshot()
+                if frame.rgb is None:
+                    print('相机没有帧，稍后重试')
+                    continue
+                if cfg.kind == 'intrinsics':
+                    observation = detector.detect(frame.rgb)
+                    if observation is None:
+                        print('没检测到棋盘')
+                        continue
+                    session.views.append(observation.view)
+                    session.images.append(frame.rgb)
+                    print(f'采集 {len(session.views)}/{need} 组视角')
+                else:
+                    observation = session.capture(image=frame.rgb)
+                    if observation is None:
+                        print('没检测到棋盘')
+                        continue
+                    print(f'采集 {len(session.base_tcp)}/{need} 组位姿，'
+                          f'视角 {len(session.views)}')
+            elif key == 's':
+                count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
+                if count < 3:
+                    print(f'样本太少（{count}），至少需要 3 组，建议 ≥{need}')
+                    continue
+                summary = session.save(path, camera_name=camera.name, apply=bool(cfg.apply))
+                print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
+                print(f'已写入 {summary["path"]}')
+                break
+            elif key == 'q':
+                print('退出（未保存）')
+                break
+            time.sleep(0.02)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        keys.stop()
+        try:
+            camera.close()
+        except Exception:
+            pass
+        try:
+            robot.disconnect()
+        except Exception:
+            pass
+    return 0 if path.exists() else 1
+
+
 def run_session(task: TaskConfig, mock: bool = False) -> int:
     """Persistent Joy-Con session: B teach, A save, X×2 replay+collect.
 
@@ -683,11 +1057,13 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
         schema = DatasetSchema.for_robot(
             robot.spec, cameras=camera_specs,
             fps=int(round(task.collect.fps)),
-            repo_id=task.collect.repo_id or f'local/{task.slug}')
+            repo_id=task.collect.repo_id or f'local/{task.slug}',
+            name_style=task.collect.feature_names)
         collector = EpisodeCollector(
             target, schema, robot=robot, gripper=gripper, cameras=cameras,
             export=exporter_for(task.collect.export),
-            fps=float(task.collect.fps), min_interval_s=0.0)
+            fps=float(task.collect.fps), min_interval_s=0.0,
+            compress=bool(task.collect.compress))
         hub = ButtonHub()
         hub.start()
         while True:
@@ -810,16 +1186,47 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
               f'X 确认={task.session.confirm_replay}，'
               f'自动回放={task.session.auto_replay}')
         print('按键：B 示教 / A 保存 / X×2 回放采集 / Y×2 删除轨迹')
+    if mode == 'master_slave':
+        duration = ('不限时长' if task.master_slave.sample_seconds <= 0
+                    else f'{task.master_slave.sample_seconds:g} s 后自动结束')
+        cap = ('单条不限帧数' if not task.collect.max_frames
+               else f'单条上限 {task.collect.max_frames} 帧')
+        start = '启动即录' if task.master_slave.auto_record else '按空格开始'
+        print(f'主从采样：fps={task.master_slave.fps:g}，{start}，{duration}，{cap}')
+        print('按键：空格 结束并保存（再按开始下一条），x 丢弃当前，q 退出')
+    if mode == 'calibrate':
+        cfg = task.calibrate
+        target = Path(cfg.path) if cfg.path else task_dir(task) / 'calibration.json'
+        print(f'标定：kind={cfg.kind} eye={cfg.eye} camera={cfg.camera or "(第一个)"}')
+        if cfg.board == 'charuco':
+            print(f'ChArUco {cfg.squares[0]}x{cfg.squares[1]}，方格 '
+                  f'{cfg.square_size * 1000:.1f} mm，字典 {cfg.aruco_dict}，'
+                  f'目标 ≥{max(3, cfg.min_samples)} 组')
+        else:
+            print(f'棋盘 {cfg.pattern[0]}x{cfg.pattern[1]}，方格 '
+                  f'{cfg.square_size * 1000:.1f} mm，目标 ≥{max(3, cfg.min_samples)} 组')
+        print(f'输出：{target}')
+        print('按键：空格 采集一帧，s 求解并保存，q 退出')
+        if cfg.auto:
+            poses = len(cfg.poses) if cfg.poses else max(3, int(cfg.pose_count))
+            print(f'自动扫描：{poses} 个位姿，速度 {cfg.speed_scale:g}，'
+                  f'停止 {cfg.settle_s:g}s（需要 --yes）')
 
 
 def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             mock: bool = False, yes: bool = False, force: bool = False,
             speed_scale: float | None = None,
-            dataset_override: str = '', dry_run: bool = False) -> int:
+            dataset_override: str = '', dry_run: bool = False,
+            auto_record: bool | None = None,
+            sample_seconds: float | None = None) -> int:
     mode = (mode or task.mode).strip().lower()
     if mode not in MODES:
         print(f'未知模式 {mode!r}，可选：{", ".join(MODES)}')
         return 2
+    if auto_record is not None:
+        task.master_slave.auto_record = bool(auto_record)
+    if sample_seconds is not None:
+        task.master_slave.sample_seconds = float(sample_seconds)
     if mode == 'session':
         if speed_scale is not None:
             task.session.replay_speed_scale = float(speed_scale)
@@ -827,6 +1234,17 @@ def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             print_plan(task, mode, task.session.prefix or task.slug, dataset_override)
             return 0
         return run_session(task, mock=mock)
+    if mode == 'master_slave':
+        if dry_run:
+            print_plan(task, mode, None, dataset_override)
+            return 0
+        return run_master_slave(task, mock=mock, dataset_override=dataset_override)
+    if mode == 'calibrate':
+        if dry_run:
+            print_plan(task, mode, None, dataset_override)
+            return 0
+        return run_calibrate(task, mock=mock, dataset_override=dataset_override,
+                             yes=yes)
     root = trajectory_root(task)
     if mode in ('teach', 'teach_collect'):
         resolved = name or task.name or _next_name(task, root)
@@ -883,6 +1301,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--dataset-root', default='', help='覆盖数据集根目录')
     parser.add_argument('--yes', action='store_true', help='跳过回放安全确认')
     parser.add_argument('--mock', action='store_true', help='离线 mock，不接硬件')
+    parser.add_argument('--auto-record', action='store_true',
+                        help='master_slave：启动即开始录制，不等按键')
+    parser.add_argument('--sample-seconds', type=float, default=None,
+                        help='master_slave：采样时长（0 = 一直采到按 q）')
     parser.add_argument('--dry-run', action='store_true', help='只打印解析后的计划，不动机器人')
     return parser
 
@@ -908,7 +1330,9 @@ def main(argv=None) -> int:
     try:
         return execute(task, mode=args.action, name=args.name, mock=args.mock,
                        yes=args.yes, force=args.force, speed_scale=args.speed_scale,
-                       dataset_override=args.dataset_root, dry_run=args.dry_run)
+                       dataset_override=args.dataset_root, dry_run=args.dry_run,
+                       auto_record=args.auto_record or None,
+                       sample_seconds=args.sample_seconds)
     except Exception as exc:
         print(f'任务执行失败：{type(exc).__name__}: {exc}')
         return 1

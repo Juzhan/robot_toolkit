@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from robot_toolkit.calibrate import (CalibrationSession, CalibrationStore,
-                                     estimate_intrinsics, solve_hand_eye)
+                                     CharucoDetector, estimate_intrinsics,
+                                     solve_hand_eye)
 from robot_toolkit.calibrate.handeye import solve_ax_xb
 from robot_toolkit.calibrate.intrinsics import (project_points,
                                                 undistort_points)
@@ -212,3 +213,26 @@ def test_checkerboard_requires_opencv(tmp_path):
             calibrate_checkerboard([])
     else:
         pytest.skip('opencv is installed')
+
+
+def test_charuco_detector_reads_the_shipped_board():
+    cv2 = pytest.importorskip('cv2')
+    pytest.importorskip('cv2.aruco')
+    from pathlib import Path
+
+    board_path = Path(__file__).resolve().parents[1] / 'assets' / 'board_charuco_300dpi.png'
+    if not board_path.exists():
+        pytest.skip('board asset missing')
+    image = cv2.cvtColor(cv2.imread(str(board_path)), cv2.COLOR_BGR2RGB)
+    detector = CharucoDetector(squares=(7, 10), square_size=0.025, marker_size=0.0194)
+    observation = detector.detect(image)
+    assert observation is not None
+    # 7x10 squares -> 6x9 = 54 inner corners, all matched to board coordinates.
+    assert len(observation.image_points) == 54
+    assert observation.object_points.shape == (54, 3)
+    assert observation.T_cam_board is None  # no intrinsics supplied
+
+    K = np.array([[1400.0, 0.0, 1240.0], [0.0, 1400.0, 1754.0], [0.0, 0.0, 1.0]])
+    posed = detector.detect(image, K=K, dist=np.zeros(5))
+    assert posed is not None and posed.T_cam_board is not None
+    assert posed.T_cam_board.shape == (4, 4)
