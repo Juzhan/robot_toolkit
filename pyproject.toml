@@ -9,7 +9,10 @@ description = "Robot-agnostic toolkit for teleoperation, teaching, data collecti
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "robot_toolkit contributors" }]
+authors = [
+    { name = "robot_toolkit contributors" },
+    { name = "DeepSeek" },
+]
 keywords = ["robotics", "teleoperation", "teaching", "calibration", "imitation-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
