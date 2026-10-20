@@ -1,0 +1,4 @@
+# Optional exact online trajectory generator used by the Mac real-robot
+# deployment.  Without it, robot_toolkit falls back to a bounded jerk-limited
+# tracker; install this for the same reference behavior as the deployment.
+ruckig>=0.12

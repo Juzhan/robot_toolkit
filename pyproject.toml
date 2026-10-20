@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robot-toolkit"
+version = "0.1.0"
+description = "Robot-agnostic toolkit for teleoperation, teaching, data collection and calibration"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "robot_toolkit contributors" }]
+keywords = ["robotics", "teleoperation", "teaching", "calibration", "imitation-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+control = ["ruckig>=0.12"]
+piper = [
+    "python-can>=4.0",
+    "pyAgxArm @ git+https://github.com/agilexrobotics/pyAgxArm.git",
+    "python-can-agx-cando @ git+https://github.com/agilexrobotics/python-can-agx-cando.git ; sys_platform == 'win32'",
+]
+
+[tool.setuptools]
+package-dir = { "robot_toolkit" = "." }
+packages = [
+    "robot_toolkit",
+    "robot_toolkit.adapters",
+    "robot_toolkit.calibrate",
+    "robot_toolkit.camera",
+    "robot_toolkit.collect",
+    "robot_toolkit.control",
+    "robot_toolkit.core",
+    "robot_toolkit.examples",
+    "robot_toolkit.gripper",
+    "robot_toolkit.robot",
+    "robot_toolkit.teach",
+    "robot_toolkit.teleop",
+]
