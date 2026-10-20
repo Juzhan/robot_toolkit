@@ -1,14 +1,12 @@
 # robot_toolkit — 机器人无关的遥操 / 示教 / 采集 / 标定工具库
 
-这个包把仓库里分散在两个仿真工程和 `ur5e_real_collect` 里的通用能力抽出来，
-做成一个**不针对具体机器人**的基础库。目标是：
+这是一个**不针对具体机器人**的机器人工具基础库。目标是：
 
 > 一套契约，多种后端。仿真、UR5、Piper 以及以后新增的机械臂，共用同一套
 > 遥操、示教、回放、采集、标定和数据集代码。
 
-本包是新增目录，可以独立使用，也可以作为后续迁移的目标。旧代码通过
-`adapters/legacy_ur.py` 就能接入新的示教/采集流程；`ur5e_real_collect` 只同步了
-Mac 真机验证过的通讯/安全和语音修复，不改变原有 CLI 结构。
+可以独立安装使用，也可以作为现有系统的迁移目标：已有 UR 驱动代码通过
+`adapters/legacy_ur.py` 包装一层，即可接入新的示教/采集流程。
 
 ---
 
@@ -16,7 +14,7 @@ Mac 真机验证过的通讯/安全和语音修复，不改变原有 CLI 结构�
 
 1. **一个契约**：`observation.state` / `action` 永远是
    `[关节1..关节N (rad), 夹爪开度 (m)]`，动作用绝对关节角，不用增量。
-   这与现有工程已经落盘的 7 维数据集保持一致。
+   这与已落盘的 7 维数据集保持一致。
 2. **接口只依赖能力**：上层只面向 `RobotBackend`、`GripperBackend`、`Camera`，
    从不判断“这是仿真还是真机”。
 3. **安全是装饰器，不是后端特性**：`SafeRobot` 包住任何后端，统一做关节限位、
@@ -33,7 +31,7 @@ Mac 真机验证过的通讯/安全和语音修复，不改变原有 CLI 结构�
 ## 2. 目录结构
 
 ```text
-projects/robot_toolkit/
+robot_toolkit/
 ├── __init__.py               # 公共导出 + 版本
 ├── cli.py                    # 统一命令行：selftest / demo / calib-* / doctor
 ├── task_runner.py            # 按任务 JSON（含 robot/gripper profile）启动示教/回放/采集
@@ -44,7 +42,9 @@ projects/robot_toolkit/
 │   └── continuous.py         # 连续参考、共享动作时钟、跟踪/夹爪门控
 ├── core/
 │   ├── conventions.py        # RobotSpec / GripperSpec，7 维契约
-│   ├── mathutils.py          # 位姿/旋转/四元数/齐次变换（纯 NumPy）│   ├── continuous.py         # Ruckig 可选 + 限幅回退的连续关节参考│   ├── safety.py             # JointLimits / SafetyGuard / WorkspaceBox / Watchdog
+│   ├── mathutils.py          # 位姿/旋转/四元数/齐次变换（纯 NumPy）
+│   ├── continuous.py         # Ruckig 可选 + 限幅回退的连续关节参考
+│   ├── safety.py             # JointLimits / SafetyGuard / WorkspaceBox / Watchdog
 │   └── rate.py               # 定频循环 + 超时统计
 ├── robot/
 │   ├── base.py               # RobotBackend / RobotState / Capabilities
@@ -95,9 +95,13 @@ projects/robot_toolkit/
 │   ├── piper_teach.py        # Piper 键盘示教 + 轨迹回放（无需相机）
 │   ├── piper_collect.py      # Piper 遥控/轨迹 -> LeRobot 数据集
 │   └── joycon_teleop.py      # 同一 Joy-Con 栈驱动 UR5e / Piper X
-├── PIPER.md                  # Piper SDK 安装、CAN、控制、任务配置与安全
+├── assets/                   # 可打印的 ChArUco 标定板（PDF / PNG）
+├── MIGRATION.md              # 旧工程迁移对照表
+├── PIPER.md                  # Piper SDK 安装、CAN、控制与安全
 ├── TELEOP.md                 # UR/Piper 共用遥操作分层与控制注意事项
-├── requirements-control.txt  # 可选：与 Mac 部署一致的 Ruckig 参考
+├── pyproject.toml            # 打包配置（pip install robot-toolkit）
+├── requirements-control.txt  # 可选：Ruckig 参考
+├── requirements-piper.txt    # 可选：Piper SDK（pyAgxArm + python-can）
 └── tests/                    # 纯 NumPy 测试
 ```
 
@@ -119,7 +123,7 @@ projects/robot_toolkit/
 | 键盘示教 | `msvcrt` | `termios` | `termios` |
 | LeRobot 视频 | FFmpeg/TorchCodec 需正确安装 | 同左 | 同左 |
 
-`python -m projects.robot_toolkit.cli doctor` 会打印当前平台、可选依赖和默认串口。
+`python -m robot_toolkit.cli doctor` 会打印当前平台、可选依赖和默认串口。
 上层的坐标系、单位、状态/动作维度和安全逻辑保持一致；跨平台验证应覆盖
 `mock`、真实机器人、相机、手柄、键盘和 LeRobot 导出，而不是只看 Python 能否导入。
 
@@ -167,77 +171,45 @@ RobotSpec.ur5e().state_names
 
 ## 5. 快速开始
 
-> 独立发布版只包含 `projects/robot_toolkit`；`run.bat` / `run` / `run.py` 和
-> `configs/tasks` 属于宿主工程里的启动器示例，不在本仓库中。库本身可以直接用
-> 下面的 `python -m projects.robot_toolkit...` 命令。
+```powershell
+pip install robot-toolkit          # 发布版
+# 或从源码开发（在仓库根目录执行）：
+pip install -e .
+```
+
+安装后即可运行（不接硬件、不装 SDK 也能跑离线自检和演示）：
 
 ```powershell
 # 不接硬件，验证核心数学、接口和录制链路
-python -m projects.robot_toolkit.cli selftest
+python -m robot_toolkit.cli selftest
 
 # 查看统一契约
-python -m projects.robot_toolkit.cli info
+python -m robot_toolkit.cli info
 
 # 查看已安装的可选 SDK
-python -m projects.robot_toolkit.cli doctor
+python -m robot_toolkit.cli doctor
 
 # Piper X 只读自检（真实 CAN；加 --mock 可不接硬件）
-python -m projects.robot_toolkit.cli piper-check --model piper_x
+python -m robot_toolkit.cli piper-check --model piper_x
 
 # Piper X 控制示例（需要 --yes；安装/CAN/固件详见 PIPER.md）
-python -m projects.robot_toolkit.examples.piper_control --enable
+python -m robot_toolkit.examples.piper_control --enable
 
 # Piper X 键盘拖动示教（无相机；空格切换夹爪，s 保存）
-python -m projects.robot_toolkit.examples.piper_teach --name piper_01 --speed-percent 20
+python -m robot_toolkit.examples.piper_teach --name piper_01 --speed-percent 20
 
 # Joy-Con 遥操；同一脚本换 --robot ur_rtde 即可驱动 UR5e
-python -m projects.robot_toolkit.examples.joycon_teleop --robot piper_x --yes
+python -m robot_toolkit.examples.joycon_teleop --robot piper_x --yes
 
 # 离线全链路：脚本遥操 -> 示教录制 -> 回放 -> 采集 -> manifest 导出
-python -m projects.robot_toolkit.cli demo --out outputs\robot_toolkit_demo
+python -m robot_toolkit.cli demo --out outputs\robot_toolkit_demo
 
 # 单元测试（纯 NumPy；LeRobot 相关测试按环境自动跳过）
-python -m pytest projects\robot_toolkit\tests -q
+python -m pytest tests -q
 ```
 
-跨平台启动时，机器人由 `configs/tasks/<任务名>.json` 的 `robot` / `gripper`
-profile 决定：
-
-```powershell
-# Windows
-run.bat --list
-run.bat stack_the_cube --dry-run
-```
-
-```bash
-# macOS / Linux
-chmod +x run
-./run --list
-./run stack_the_cube --dry-run
-
-# 任意平台直接走 Python
-python3 run.py stack_the_cube --dry-run
-```
-
-`run.bat` / `run` / `run.py` 只是启动器；真正的任务、机器人、夹爪、相机和
-输出目录都在 JSON 配置里，不会在脚本里按操作系统或机器人型号分叉。
-
-当前自带的 `stack_the_cube`（Piper X）和 `open_the_door`（UR5e）的 `mode`
-都是 `session`：启动后保持机器人、夹爪和相机连接，用 Joy-Con 反复示教/采集。
-
-| 按键 | 作用 |
-| --- | --- |
-| `B` | 开始一次拖动示教 |
-| `A` | 结束并保存轨迹 |
-| `ZR` | 夹爪闭合/张开 |
-| `X` ×2 | 回放上一条轨迹并录制一个 episode |
-| `Y` ×2 | 删除上一条示教轨迹 |
-| `R` | 空闲时缓慢回默认姿态 |
-| `Home` | 打印当前状态 |
-
-一次会话里可以连续做多条轨迹、连续采多个 episode，数据集会追加到同一个
-LeRobot 数据集，不需要重启进程。`projects/ur5e_real_collect` 的
-`ur5.bat session` 是独立的旧入口，不负责这套通用 `session` 流程。
+真机任务由 `task_runner.py` 读取的任务 JSON 驱动，`robot` / `gripper` /
+`camera` 都由 profile 决定（见 `profiles.py`），业务启动器放在应用层。
 
 `demo` 会生成：
 
@@ -255,9 +227,9 @@ outputs/robot_toolkit_demo/
 ### 6.1 同一个控制循环，驱动仿真或真机
 
 ```python
-from projects.robot_toolkit.profiles import build_robot
-from projects.robot_toolkit.robot import SafeRobot
-from projects.robot_toolkit.core.safety import JointLimits, SafetyGuard
+from robot_toolkit.profiles import build_robot
+from robot_toolkit.robot import SafeRobot
+from robot_toolkit.core.safety import JointLimits, SafetyGuard
 
 robot = build_robot('ur_rtde')          # 换成 'mock' 或 'mujoco' 即可
 robot = SafeRobot(robot, SafetyGuard(JointLimits.symmetric(6, 3.14, 1.0)))
@@ -277,10 +249,9 @@ robot.disconnect()
 ### 6.2 遥操
 
 ```python
-from projects.robot_toolkit.core.mathutils import rotvec_to_matrix
-from projects.robot_toolkit.teleop import (CartesianMappingConfig, CartesianTeleop,
-                                           JoyConSource, TeleopRunner,
-                                           TeleopRunnerConfig)
+from robot_toolkit.core.mathutils import rotvec_to_matrix
+from robot_toolkit.teleop import (CartesianMappingConfig, CartesianTeleop,
+                                  JoyConSource, TeleopRunner, TeleopRunnerConfig)
 
 state = robot.state()
 mapping = CartesianTeleop(CartesianMappingConfig(
@@ -318,7 +289,7 @@ result = runner.run()
 ### 6.3 示教与回放
 
 ```python
-from projects.robot_toolkit.teach import TeachRecorder, Replayer
+from robot_toolkit.teach import TeachRecorder, Replayer
 
 with TeachRecorder(robot, gripper, rate=125) as recorder:
     robot.freedrive(True)
@@ -338,15 +309,14 @@ result = Replayer(robot, gripper, rate=125, max_joint_speed=1.0).run(
 * 超速直接拒绝，除非显式 `allow_fast=True`；
 * `Replayer` 只依赖 `servo_j`，所以仿真和真机共用同一段回放代码。
 
-### 6.4 连续动作流（来自 Mac 真机验证版本）
+### 6.4 连续动作流
 
-`projects/ur5e_real_collect` 的 Mac 部署版用 Ruckig 把 10 Hz 策略动作接到
-125 Hz `servoJ` 上，并在动作块之间保持位置/速度/加速度连续；工具库把这部分
-抽成了机器人无关的 `control` 层。
+真机部署中，Ruckig 用来把 10 Hz 策略动作接到 125 Hz `servoJ` 上，并在动作块
+之间保持位置/速度/加速度连续；工具库把这部分抽成了机器人无关的 `control` 层。
 
 ```python
-from projects.robot_toolkit.control import (ContinuousConfig, SequenceSource,
-                                            run_continuous_stream)
+from robot_toolkit.control import (ContinuousConfig, SequenceSource,
+                                   run_continuous_stream)
 
 config = ContinuousConfig(
     control_hz=125, action_hz=10,
@@ -363,19 +333,19 @@ result = run_continuous_stream(robot, gripper, source, config,
 * `initPeriod()/waitPeriod()` 是 ur_rtde 的控制器专属接口，不是工具库的通用
   API。工具库统一暴露的是 `RobotBackend.init_period()/wait_period()`：UR 覆盖为
   RTDE 控制器周期；Mock / Piper / MuJoCo 没有控制器周期时返回 `None/False`，
-  上层自动回退到 `time.perf_counter()` + `sleep()` 的宿主时钟。
+  上层自动回退到 `time.perf_counter()` + `sleep()` 的软件时钟。
 * UR 在 Windows/Linux 使用控制器周期；macOS 保留实测稳定的主机时钟分支。
 * `ContinuousReference` 默认自动使用 Ruckig；没安装时退化为限幅追踪器，
-  仍保证速度/加速度/急动度不越界。需要与 Mac 部署完全一致时：
-  `pip install -r projects/robot_toolkit/requirements-control.txt`。
+  仍保证速度/加速度/急动度不越界。需要与真机部署完全一致时：
+  `pip install robot-toolkit[control]`。
 * Robotiq URCap 可设置 `require_fresh_measurement=true`：实测宽度超过 1 秒
   未更新时直接报错，不再用最后的目标宽度冒充观测。
 
 ### 6.5 采集
 
 ```python
-from projects.robot_toolkit.collect import (CameraSpec, DatasetSchema,
-                                            EpisodeRecorder, export_lerobot)
+from robot_toolkit.collect import (CameraSpec, DatasetSchema,
+                                   EpisodeRecorder, export_lerobot)
 
 # 方案 A：只有机器人，没有任何相机（状态/动作 7 维）
 schema = DatasetSchema.for_robot(spec, cameras=(), fps=10,
@@ -401,7 +371,7 @@ recorder.close()
 读取相机快照：
 
 ```python
-from projects.robot_toolkit.collect import EpisodeCollector
+from robot_toolkit.collect import EpisodeCollector
 
 collector = EpisodeCollector(
     'outputs/my_task/dataset', schema,
@@ -418,7 +388,7 @@ collector.close()
 已有的示教轨迹可以直接转成数据集：
 
 ```python
-from projects.robot_toolkit.collect import collect_trajectory
+from robot_toolkit.collect import collect_trajectory
 collector = collect_trajectory(trajectory, schema, 'outputs/my_task/dataset',
                                task='stack the cube')
 collector.close()
@@ -426,7 +396,7 @@ collector.close()
 # 或用统一的 Piper 入口
 # --source trajectory: 导出 piper_teach 的轨迹
 # --source teleop:     Joy-Con 采集，支持 --cameras-json
-python -m projects.robot_toolkit.examples.piper_collect --source teleop --cameras-json cameras.json --yes
+python -m robot_toolkit.examples.piper_collect --source teleop --cameras-json cameras.json --yes
 ```
 
 等价的 JSON 配置可以直接交给 `DatasetSchema.from_dict()`：
@@ -458,8 +428,8 @@ python -m projects.robot_toolkit.examples.piper_collect --source teleop --camera
 ### 6.6 标定
 
 ```python
-from projects.robot_toolkit.calibrate import (CalibrationStore, solve_hand_eye,
-                                              estimate_intrinsics)
+from robot_toolkit.calibrate import (CalibrationStore, solve_hand_eye,
+                                     estimate_intrinsics)
 
 # 内参：视图 = {'object_points': Nx3(Z=0), 'image_points': Nx2}
 intrinsics = estimate_intrinsics(views, image_size=(640, 480))
@@ -486,8 +456,7 @@ Piper 的 `state().tcp` 已归一化到该约定，所以同一个 `CalibrationS
 通用采集会话把“机器人当前 TCP + 相机帧 + 标定板位姿”串起来：
 
 ```python
-from projects.robot_toolkit.calibrate import (CalibrationSession,
-                                              ChessboardDetector)
+from robot_toolkit.calibrate import (CalibrationSession, ChessboardDetector)
 
 session = CalibrationSession(
     robot=robot,
@@ -513,9 +482,8 @@ session.save('outputs/calib/calibration.json', apply=True)
 只需要一个文件，通常 30–80 行：
 
 ```python
-from projects.robot_toolkit.robot.base import (Capabilities, RobotBackend,
-                                               RobotState)
-from projects.robot_toolkit.core.conventions import RobotSpec
+from robot_toolkit.robot.base import (Capabilities, RobotBackend, RobotState)
+from robot_toolkit.core.conventions import RobotSpec
 
 class MyArm(RobotBackend):
     def __init__(self, sdk):
@@ -566,18 +534,16 @@ Piper：`RobotSpec.piper_x()` 已经提供关节/夹爪命名；真机按上面�
 因为纯位置执行器在重力下会有稳态下垂，和真机伺服的手感不一致。
 实测 UR5e 场景：`servo_l` 追踪误差约 0.15 mm，`move_j` 正常收敛。
 
-差别只存在于后端内部；示教、回放、采集、遥操循环完全相同。现有
-`ur5e_joycon_sim` 和 `ur5e_real_collect` 都可以逐步迁移到这一层
-（见 `MIGRATION.md`）。
+差别只存在于后端内部；示教、回放、采集、遥操循环完全相同。旧工程可以按
+[MIGRATION.md](./MIGRATION.md) 的对照表逐步迁移到这一层。
 
 ---
 
-## 9. 与现有工程的关系
+## 9. 接入旧代码与数据
 
-* **零侵入**：没有修改 `projects/ur5e_joycon_sim`、`projects/piper_phone_sim`、
-  `projects/ur5e_real_collect` 的任何文件。
-* **可直接复用**：`adapters/legacy_ur.py` 把现有 `URRobot` 包装成
-  `RobotBackend`，即可用新的 `TeachRecorder` / `Replayer` / `EpisodeRecorder`。
+* **零侵入**：`adapters/legacy_ur.py` 把现有 `URRobot` 包装成
+  `RobotBackend`，即可用新的 `TeachRecorder` / `Replayer` / `EpisodeRecorder`，
+  无需改动旧驱动。
 * **数据兼容**：状态/动作命名、深度约定、`T_world_camera` 都与既有数据集一致；
   LeRobot 导出使用相同的 feature 结构，可直接进入 LeRobot / 扩散策略等训练流程。
 * **迁移路径**：先替换“录制/回放/导出”，再替换“机器人/夹爪/相机驱动”，
@@ -597,11 +563,11 @@ Piper：`RobotSpec.piper_x()` 已经提供关节/夹爪命名；真机按上面�
 | LeRobot 导出 | — | `lerobot>=0.4.3` |
 | Robotiq Modbus | — | `pymodbus` |
 
-`python -m projects.robot_toolkit.cli doctor` 会列出本机实际可用的组件。
+`python -m robot_toolkit.cli doctor` 会列出本机实际可用的组件。
 
 ### 已验证组合
 
-* 基础环境（NumPy 2.1）：68 个测试通过，`selftest` 7/7；
+* 基础环境（NumPy 2.1）：99 个测试通过（1 个按环境跳过），`selftest` 7/7；
 * MuJoCo 3.8.1 + 现有 UR5e Menagerie 场景：`servo_l` 误差 0.15 mm、`move_j` 收敛；
 * LeRobot 0.6.1：单 episode 导出、追加第二个 episode、深度 side-car 均通过。
 
