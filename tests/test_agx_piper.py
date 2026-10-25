@@ -196,6 +196,12 @@ def test_real_backend_with_fake_sdk(monkeypatch):
     assert state.tcp is not None
     assert state.tcp[3:] == pytest.approx([0.0, 1.5708, 0.0], abs=1e-5)
     assert state.extra['tcp_rpy'] == pytest.approx([0.0, 1.5708, 0.0])
+    status = robot.status()
+    assert status['state']['protective_stop'] is False
+    assert status['state']['fault'] is False
+    assert status['state']['enabled'] is None
+    assert status['state']['sources']['qd'] == 'finite_difference_clipped'
+    assert status['state']['sources']['extra.enabled'] == 'cached_command_state'
     assert robot.connected and robot._enabled
     assert robot.servo_j([0.05] * 6, 0.01)
     assert robot.servo_j([0.06] * 6, 0.01)
@@ -236,8 +242,27 @@ def test_safe_robot_uses_native_joint_planner(monkeypatch):
         assert len(arm.commands) == before + 1
         assert arm.commands[-1] == pytest.approx([0.2] * 6)
         assert arm.speed == 20
+        result = safe.move_j_result([0.1] * 6, speed=0.2, timeout=1.0)
+        assert result['ok'] and result['reason'] == 'reached'
+        assert result['joint_error_rad'] == pytest.approx(0.0)
     finally:
         safe.disconnect()
+
+
+def test_missing_arm_status_remains_unknown(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(firmware='default', ik_warmup=False))
+    robot.connect_read_only()
+    monkeypatch.setattr(arm, 'get_arm_status', lambda: _Message(types.SimpleNamespace()))
+    try:
+        state = robot.status()['state']
+        assert state['protective_stop'] is None
+        assert state['fault'] is None
+        assert not arm.enabled and arm.commands == []
+    finally:
+        robot.disconnect()
 
 
 def test_ik_warmup_runs_at_connect(monkeypatch):

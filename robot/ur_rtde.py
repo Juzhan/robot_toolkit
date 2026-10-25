@@ -127,11 +127,16 @@ class UrRtdeRobot(RobotBackend):
         tcp = np.asarray(self.receive.getActualTCPPose(), dtype=float)
         try:
             timestamp = float(self.receive.getTimestamp())
+            timestamp_clock = 'controller'
         except Exception:
             timestamp = time.monotonic() - self._t0
+            timestamp_clock = 'host_elapsed'
         return RobotState(t=timestamp, q=joints, qd=qd, tcp=tcp,
                           protective_stop=bool(self.receive.isProtectiveStopped()),
-                          connected=True)
+                          connected=self.connected, timestamp_clock=timestamp_clock,
+                          protective_stop_known=True,
+                          sources={'q': 'controller', 'qd': 'controller', 'tcp': 'controller',
+                                   'protective_stop': 'controller'})
 
     def protective_stop(self) -> bool:
         if self.mock:

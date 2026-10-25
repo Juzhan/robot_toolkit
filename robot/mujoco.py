@@ -180,7 +180,15 @@ class MujocoRobot(RobotBackend):
         qd = self.data.qvel[self.dof_indices].copy()
         return RobotState(t=self.clock() - self._t0, q=q, qd=qd, tcp=tcp,
                           protective_stop=False, connected=self.connected,
-                          extra={'gripper': self.gripper_width()})
+                          timestamp_clock='host_elapsed',
+                          tcp_frame='world',
+                          sources={'q': 'simulation', 'qd': 'simulation', 'tcp': 'forward_kinematics'},
+                          extra={'gripper': self.gripper_width(), 'simulation_time': float(self.data.time)})
+
+    def describe(self) -> dict:
+        description = super().describe()
+        description['tcp_frame'] = 'world'
+        return description
 
     def tcp_pose(self) -> np.ndarray:
         return self.state().tcp

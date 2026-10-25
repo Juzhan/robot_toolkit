@@ -77,6 +77,9 @@ class MockRobot(RobotBackend):
             tcp = np.asarray(self._fk(self._q), dtype=float)
         return RobotState(t=self.clock() - self._t0, q=self._q.copy(), qd=self._qd.copy(),
                           tcp=tcp, protective_stop=False, connected=self._connected,
+                          timestamp_clock='host_elapsed',
+                          sources={'q': 'simulation', 'qd': 'simulation',
+                                   'tcp': 'forward_kinematics' if tcp is not None else 'unavailable'},
                           extra={'target': self._target.copy(), 'gripper': self._gripper,
                                  'freedrive': self._freedrive})
 

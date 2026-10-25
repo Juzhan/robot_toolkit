@@ -498,7 +498,8 @@ class AgxPiperRobot(RobotBackend):
         try:
             status = self._msg_value(self._robot.get_arm_status())
             if status is not None:
-                arm_status = int(getattr(status, 'arm_status', 0) or 0)
+                raw_arm_status = getattr(status, 'arm_status', None)
+                arm_status = None if raw_arm_status is None else int(raw_arm_status)
                 motion_status = getattr(status, 'motion_status', None)
                 err_code = getattr(status, 'err_code', None)
                 protective = arm_status in _BAD_ARM_STATUS
@@ -520,6 +521,16 @@ class AgxPiperRobot(RobotBackend):
         }
         return RobotState(t=stamp, q=q, qd=self._qd.copy(), tcp=tcp,
                           protective_stop=protective, connected=self._connected,
+                  timestamp_clock='sdk_or_host_elapsed',
+                  fault=(None if arm_status is None or err_code is None
+                     else bool(protective or err_code)),
+                  protective_stop_known=arm_status is not None,
+                  sources={'q': 'leader_feedback' if used_leader else 'controller',
+                       'qd': 'finite_difference_clipped',
+                       'tcp': ('unavailable' if tcp is None else
+                           'forward_kinematics' if self._freedrive else 'controller'),
+                       'protective_stop': 'arm_status_mapping',
+                       'extra.enabled': 'cached_command_state'},
                           extra=extra)
 
     def _safe_call(self, name, default=None):
@@ -852,6 +863,7 @@ class AgxPiperRobot(RobotBackend):
         except Exception:
             pass
         return {
+            **super().describe(),
             'backend': 'agx_piper',
             'model': self.config.model,
             'interface': self._interface(),

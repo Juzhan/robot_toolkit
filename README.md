@@ -17,6 +17,9 @@ run.bat piper_master_slave     # 按 JSON 里的 mode 启动
 
 跨平台等价入口是 `python run.py ...`；解释器选择与配置字段见第 5.1 节。
 
+Agent / Python 调用的统一只读状态、能力查询与实测运动结果：
+[接口约定与示例](docs/agent_api.md)。保留原有布尔运动接口，不自动使能、不绕过安全包装器。
+
 ---
 
 ## 1. 设计原则

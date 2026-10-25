@@ -66,6 +66,20 @@ class SafeRobot(RobotBackend):
     def telemetry(self) -> dict:
         return self.inner.telemetry()
 
+    def describe(self) -> dict:
+        description = self.inner.describe()
+        description['safety'] = {
+            'wrapper': type(self).__name__,
+            'joint_lower_rad': self.guard.limits.lower.tolist(),
+            'joint_upper_rad': self.guard.limits.upper.tolist(),
+            'max_velocity_rad_s': self.guard.limits.max_velocity.tolist(),
+            'max_step_rad': self.guard.max_step_rad,
+            'velocity_semantics': 'generic_servo_target_to_feedback_lead',
+            'workspace_guard': self.workspace is not None,
+            'full_collision_check': False,
+        }
+        return description
+
     def forward_kinematics(self, joints):
         return self.inner.forward_kinematics(joints)
 
