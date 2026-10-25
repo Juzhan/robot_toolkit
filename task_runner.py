@@ -29,9 +29,11 @@ from .collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_traje
                       exporter_for)
 from .collect.passive import sample_episodes
 from .config import build_dataclass
+from .errors import CalibrationError
 from .profiles import build_camera_hub, build_gripper, build_robot
+from .core.safety_envelope import SafetyEnvelope
 from .teach import (Replayer, joycon_teach, joint_motion, keyboard_teach,
-                    load_trajectory, save_trajectory, state_line, summarize)
+                    KeyReader, load_trajectory, save_trajectory, state_line, summarize)
 from .teleop import ButtonHub
 
 # In the host workspace the package lives at <root>/projects/robot_toolkit,
@@ -42,7 +44,7 @@ ROOT = (Path(__file__).resolve().parents[2]
         else _PACKAGE_ROOT)
 DEFAULT_ROOT = 'outputs/robot_tasks'
 MODES = ('teach', 'replay', 'collect', 'teach_collect', 'export', 'session',
-         'master_slave', 'calibrate')
+         'master_slave', 'calibrate', 'safety')
 
 
 @dataclass
@@ -155,6 +157,32 @@ class CalibrateOptions:
     pose_seed: int = 0
     settle_s: float = 0.8
     speed_scale: float = 0.3
+    safety_path: str = ''
+    require_safety_envelope: bool = True
+    require_initial_board: bool = True
+    path_clearance_m: float = 0.01
+    quality_protocol: bool = False
+    action: str = 'solve'
+    frames_per_pose: int = 6
+    verify_samples: int = 8
+    verify_after: bool = False
+    solution_path: str = ''
+    intrinsics_mode: str = 'auto'
+    pose_plan_path: str = ''
+
+
+@dataclass
+class SafetyOptions:
+    """Human-guided safety envelope capture for any RobotBackend."""
+
+    path: str = ''
+    rate: float = 25.0
+    max_duration: float = 300.0
+    margin_rad: float = 0.05
+    tcp_margin_m: float = 0.02
+    min_samples: int = 100
+    freedrive: bool = True
+    wait_feedback: str = ''
 
 
 @dataclass
@@ -174,6 +202,7 @@ class TaskConfig:
     session: SessionOptions = field(default_factory=SessionOptions)
     master_slave: MasterSlaveOptions = field(default_factory=MasterSlaveOptions)
     calibrate: CalibrateOptions = field(default_factory=CalibrateOptions)
+    safety: SafetyOptions = field(default_factory=SafetyOptions)
     source_path: str = ''
 
 
@@ -838,35 +867,119 @@ def _run_calibrate_auto(robot, camera, detector, session, cfg: CalibrateOptions,
     if not yes:
         print('自动标定会移动机械臂：确认工作区无人、急停在手后加 --yes')
         return 2
+    if cfg.pose_plan_path:
+        from .calibrate.plan_capture import run_plan
+        return run_plan(robot, camera, session, cfg, path)
+    envelope = None
+    if cfg.safety_path:
+        try:
+            envelope = SafetyEnvelope.load(cfg.safety_path)
+        except Exception as exc:
+            print(f'安全包络加载失败：{exc}')
+            return 2
+    elif cfg.require_safety_envelope:
+        print('自动标定必须配置 calibrate.safety_path')
+        return 2
+    # Pose generation is relative to the actual arm state.  Connect first so
+    # the backend can provide joint feedback; this also makes failures explicit
+    # before any camera or motion work starts.
     try:
+        robot.connect()
         poses = _calibrate_poses(robot, cfg)
     except Exception as exc:
         print(f'无法生成标定位姿：{exc}')
+        try:
+            robot.disconnect()
+        except Exception:
+            pass
+        return 2
+    if envelope is not None:
+        workspace = getattr(robot, 'workspace', None)
+        if workspace is not None:
+            try:
+                state = robot.state()
+                deadline = time.monotonic() + 3.0
+                while (state.q is None or state.tcp is None) and time.monotonic() < deadline:
+                    time.sleep(.02)
+                    state = robot.state()
+                workspace.check_feedback(state)
+                safe_poses = []
+                previous = state.q
+                for pose in poses:
+                    try:
+                        if robot.guard.limits.violates(pose):
+                            continue
+                        workspace.check_path(previous, pose, clearance_m=cfg.path_clearance_m)
+                    except Exception:
+                        continue
+                    safe_poses.append(pose)
+                    previous = pose
+            except Exception as exc:
+                print(f'末端空间预检失败：{exc}')
+                robot.disconnect()
+                return 2
+        else:
+            safe_poses = [pose for pose in poses if envelope.contains_q(pose)]
+        if len(safe_poses) < len(poses):
+            print(f'安全包络过滤：{len(poses) - len(safe_poses)} 个位姿越界，拒绝执行')
+        poses = safe_poses
+    if len(poses) < need:
+        print(f'安全范围内候选位姿少于目标 {need}，拒绝自动标定')
+        robot.disconnect()
         return 2
     print(f'自动标定：{len(poses)} 个位姿，速度 {cfg.speed_scale:g}，'
           f'每处停 {cfg.settle_s:g}s；目标 ≥{need} 组')
+    quality_views = []
     try:
-        robot.connect()
-        # ``enable`` lives on the concrete backend; SafeRobot does not proxy it.
-        backend = getattr(robot, 'inner', robot)
-        if hasattr(backend, 'enable'):
-            try:
-                backend.enable()
-            except Exception as exc:
-                print(f'使能失败：{exc}')
-                return 2
         if not camera.opened:
             camera.open()
+        if cfg.require_initial_board:
+            print('自动标定预检：等待相机出图并检查当前位姿是否看到标定板……')
+            deadline = time.monotonic() + 8.0
+            visible = False
+            while time.monotonic() < deadline:
+                frame = camera.snapshot()
+                if frame.rgb is not None:
+                    try:
+                        visible = detector.detect(frame.rgb) is not None
+                    except Exception as exc:
+                        print(f'标定板检测失败：{exc}')
+                        return 2
+                    if visible:
+                        break
+                time.sleep(0.05)
+            if not visible:
+                print('预检失败：当前位姿看不到有效标定板，未执行任何自动运动。')
+                return 2
+            print('预检通过：当前位姿已检测到标定板。')
+        if not robot.prepare_motion():
+            raise CalibrationError('controller did not become ready for motion')
         for index, pose in enumerate(poses, 1):
             if getattr(robot, 'protective_stop', lambda: False)():
                 print('检测到保护性停止，终止自动标定')
                 break
             try:
-                robot.move_j(pose, speed=float(cfg.speed_scale), wait=True)
+                if not robot.move_j(pose, speed=float(cfg.speed_scale), wait=True):
+                    raise CalibrationError('move did not settle')
             except Exception as exc:
-                print(f'[{index}/{len(poses)}] 运动失败：{exc}（跳过）')
-                continue
+                robot.stop_motion()
+                print(f'[{index}/{len(poses)}] 运动失败：{exc}，终止采集')
+                break
             time.sleep(max(0.0, float(cfg.settle_s)))
+            if cfg.quality_protocol:
+                from .calibrate.protocol import capture_station
+                try:
+                    view = capture_station(session, frames=cfg.frames_per_pose)
+                except Exception as exc:
+                    robot.stop_motion()
+                    print(f'采集失败，保留已采数据：{exc}')
+                    break
+                if view is not None:
+                    quality_views.append(view)
+                print(f'[{index}/{len(poses)}] 有效位姿 {len(quality_views)}/{need}')
+                if len(quality_views) >= need:
+                    break
+                continue
             frame = camera.snapshot()
             if frame.rgb is None:
                 print(f'[{index}/{len(poses)}] 无图像，跳过')
@@ -901,8 +1014,11 @@ def _run_calibrate_auto(robot, camera, detector, session, cfg: CalibrateOptions,
         except Exception:
             pass
 
+    if cfg.quality_protocol:
+        from .calibrate.protocol import finish
+        return finish(session, cfg, path, quality_views)
     count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
-    if count < 3:
+    if count < need:
         print(f'样本不足（{count}），没有保存')
         return 1
     summary = session.save(path, camera_name=camera.name, apply=bool(cfg.apply))
@@ -917,6 +1033,17 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
     from .calibrate import CalibrationSession, ChessboardDetector
 
     cfg = task.calibrate
+    if cfg.action not in ('solve', 'verify'):
+        raise ValueError('calibrate.action must be solve or verify')
+    if cfg.quality_protocol and cfg.kind != 'handeye':
+        raise ValueError('quality_protocol currently requires kind=handeye')
+    if cfg.frames_per_pose < 3:
+        raise ValueError('frames_per_pose must be at least 3')
+    if cfg.action == 'verify':
+        if not cfg.quality_protocol or not Path(cfg.solution_path).is_file():
+            raise ValueError('verify requires quality_protocol and an existing solution_path')
+    if cfg.quality_protocol and cfg.apply:
+        raise ValueError('review independent verification before applying calibration')
     robot, _gripper, cameras = _build_runtime(task, mock, with_cameras=True)
     if not cameras:
         print('calibrate 需要至少一个相机：请在 collect.cameras 里配置')
@@ -929,6 +1056,11 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
     if camera is None:
         print(f'找不到相机 {cfg.camera!r}；可用：{", ".join(c.name for c in cameras)}')
         return 2
+    if cfg.action == 'verify':
+        from .calibrate.quality import validate_identity
+        from .calibrate.identity import calibration_identity
+        validate_identity(json.loads(Path(cfg.solution_path).read_text()),
+                          calibration_identity(camera, cfg))
 
     if cfg.board == 'charuco':
         from .calibrate import CharucoDetector
@@ -948,6 +1080,14 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
                                  camera_name=camera.name)
     path = Path(cfg.path) if cfg.path else task_dir(task) / 'calibration.json'
     need = max(3, int(cfg.min_samples))
+    if cfg.action == 'verify':
+        need = max(8, int(cfg.verify_samples))
+    elif cfg.quality_protocol and cfg.verify_after:
+        need += max(8, int(cfg.verify_samples))
+    if cfg.quality_protocol:
+        # Each capture keeps its images, observations and reports; preserve old runs.
+        from datetime import datetime
+        path = path.parent / datetime.now().strftime('%Y%m%d_%H%M%S_%f') / path.name
 
     if cfg.auto:
         return _run_calibrate_auto(robot, camera, detector, session, cfg, path, need, yes)
@@ -961,6 +1101,7 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
               f'目标 ≥{need} 组')
     print('按键：空格=采集一帧，s=求解并保存，q=退出（不发送任何运动指令）')
     keys = KeyReader().start()
+    quality_views = []
     try:
         if cfg.kind != 'intrinsics':
             robot.connect()
@@ -980,6 +1121,13 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
         while True:
             key = keys.get()
             if key == ' ':
+                if cfg.quality_protocol:
+                    from .calibrate.protocol import capture_station
+                    view = capture_station(session, frames=cfg.frames_per_pose)
+                    if view is not None:
+                        quality_views.append(view)
+                    print(f'有效位姿 {len(quality_views)}/{need}')
+                    continue
                 frame = camera.snapshot()
                 if frame.rgb is None:
                     print('相机没有帧，稍后重试')
@@ -1000,6 +1148,9 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
                     print(f'采集 {len(session.base_tcp)}/{need} 组位姿，'
                           f'视角 {len(session.views)}')
             elif key == 's':
+                if cfg.quality_protocol:
+                    from .calibrate.protocol import finish
+                    return finish(session, cfg, path, quality_views)
                 count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
                 if count < 3:
                     print(f'样本太少（{count}），至少需要 3 组，建议 ≥{need}')
@@ -1207,10 +1358,85 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
                   f'{cfg.square_size * 1000:.1f} mm，目标 ≥{max(3, cfg.min_samples)} 组')
         print(f'输出：{target}')
         print('按键：空格 采集一帧，s 求解并保存，q 退出')
-        if cfg.auto:
+        if cfg.auto and cfg.pose_plan_path:
+            print(f'固定视角清单：{cfg.pose_plan_path}')
+            print(f'每个位姿等待 {cfg.settle_s:g}s；采集失败时停止，禁止替换样本角色。')
+        elif cfg.auto:
             poses = len(cfg.poses) if cfg.poses else max(3, int(cfg.pose_count))
             print(f'自动扫描：{poses} 个位姿，速度 {cfg.speed_scale:g}，'
                   f'停止 {cfg.settle_s:g}s（需要 --yes）')
+    if mode == 'safety':
+        cfg = task.safety
+        target = Path(cfg.path) if cfg.path else task_dir(task) / 'safety_envelope.json'
+        print(f'安全包络：人工 Freedrive 采样 {cfg.rate:g} Hz，最长 {cfg.max_duration:g}s')
+        print(f'输出：{target}；最小样本 {cfg.min_samples}；关节余量 {cfg.margin_rad:g} rad')
+        print('按键：s/回车保存，q 放弃')
+
+
+def run_safety(task: TaskConfig, mock: bool = False) -> int:
+    """Capture a reusable safety envelope while the operator drags the arm."""
+    cfg = task.safety
+    robot, _gripper, _cameras = _build_runtime(task, mock, with_cameras=False)
+    path = Path(cfg.path) if cfg.path else task_dir(task) / 'safety_envelope.json'
+    live_path = path.parent / 'live_state.json'
+    keys = KeyReader().start()
+    samples = []
+    started = time.monotonic()
+    try:
+        robot.connect()
+        if cfg.freedrive:
+            robot.freedrive(True)
+        if cfg.wait_feedback:
+            deadline = time.monotonic() + 3.0
+            while time.monotonic() < deadline:
+                if robot.state().extra.get('feedback', '') == cfg.wait_feedback:
+                    break
+                time.sleep(0.05)
+            else:
+                print(f'未收到 {cfg.wait_feedback!r} 反馈，未开始采集。')
+                return 2
+        print('安全包络采集：请手动拖动机械臂覆盖允许工作区域。', flush=True)
+        print('按 s/回车保存，q 放弃；急停保持在手边。', flush=True)
+        period = 1.0 / max(1.0, float(cfg.rate))
+        next_sample = time.monotonic()
+        while time.monotonic() - started < float(cfg.max_duration):
+            now = time.monotonic()
+            if now >= next_sample:
+                state = robot.state()
+                live_path.parent.mkdir(parents=True, exist_ok=True)
+                live_path.write_text(json.dumps({
+                    'ok': state.q is not None,
+                    'q': None if state.q is None else state.q.tolist(),
+                    'tcp': None if state.tcp is None else state.tcp.tolist(),
+                    'protective_stop': bool(state.protective_stop),
+                    'extra': state.extra,
+                }, ensure_ascii=False), encoding='utf-8')
+                if state.q is not None and state.tcp is not None:
+                    samples.append((state.q.copy(), state.tcp.copy()))
+                next_sample = now + period
+            key = keys.get()
+            if key in ('s', '\r', '\n'):
+                break
+            if key in ('q', '\x1b'):
+                print('放弃安全包络采集。', flush=True)
+                return 2
+            time.sleep(0.01)
+        if len(samples) < max(3, int(cfg.min_samples)):
+            print(f'样本不足：{len(samples)}，至少需要 {max(3, int(cfg.min_samples))} 个。')
+            return 3
+        envelope = SafetyEnvelope.from_samples(samples, cfg.margin_rad, cfg.tcp_margin_m)
+        envelope.save(path)
+        print(json.dumps(envelope.to_dict(), ensure_ascii=False, indent=2))
+        print(f'已保存安全包络：{path}')
+        return 0
+    finally:
+        keys.stop()
+        if cfg.freedrive:
+            try:
+                robot.freedrive(False)
+            except Exception:
+                pass
+        robot.disconnect()
 
 
 def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
@@ -1245,6 +1471,11 @@ def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             return 0
         return run_calibrate(task, mock=mock, dataset_override=dataset_override,
                              yes=yes)
+    if mode == 'safety':
+        if dry_run:
+            print_plan(task, mode, None, dataset_override)
+            return 0
+        return run_safety(task, mock=mock)
     root = trajectory_root(task)
     if mode in ('teach', 'teach_collect'):
         resolved = name or task.name or _next_name(task, root)
@@ -1306,6 +1537,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--sample-seconds', type=float, default=None,
                         help='master_slave：采样时长（0 = 一直采到按 q）')
     parser.add_argument('--dry-run', action='store_true', help='只打印解析后的计划，不动机器人')
+    parser.add_argument('--verify-solution', help='标定任务：用指定 solution.json 采集独立验证位姿')
+    parser.add_argument('--pose-plan', help='按固定的标定/验证姿态清单采样，不重新随机生成')
     return parser
 
 
@@ -1324,6 +1557,17 @@ def main(argv=None) -> int:
         return 0
     try:
         task = load_task_config(args.config or args.task)
+        if args.pose_plan:
+            task.calibrate.pose_plan_path = args.pose_plan
+        if args.verify_solution:
+            if args.pose_plan:
+                raise ValueError('--verify-solution and --pose-plan cannot be combined')
+            task.calibrate.pose_plan_path = ''
+            task.calibrate.action = 'verify'
+            task.calibrate.quality_protocol = True
+            task.calibrate.solution_path = args.verify_solution
+            task.calibrate.verify_after = False
+            task.calibrate.pose_seed += 10000
     except Exception as exc:
         print(f'加载任务配置失败：{exc}')
         return 2

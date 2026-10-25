@@ -29,6 +29,8 @@ dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
 control = ["ruckig>=0.12"]
+# Optional host-side IK. PyRoki is not on PyPI; install it from source.
+ik = ["pyroki @ git+https://github.com/chungmin99/pyroki.git"]
 piper = [
     "python-can>=4.0",
     "pyAgxArm @ git+https://github.com/agilexrobotics/pyAgxArm.git",

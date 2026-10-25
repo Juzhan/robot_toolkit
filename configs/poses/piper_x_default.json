@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "name": "default",
+  "robot": "piper_x",
+  "recorded_at": "2026-10-20T18:26:33.427256+08:00",
+  "source": "read_only_can0_follower_feedback",
+  "purpose": "User-selected default reference pose; no automatic motion on load.",
+  "q_rad": [
+    0.18116517635701143,
+    0.4969126913353056,
+    -1.057617166831004,
+    1.3676400018627566,
+    0.06262241356155654,
+    0.11306242894419266
+  ],
+  "q_deg": [10.38, 28.471, -60.597, 78.36, 3.588, 6.478],
+  "tcp_pose": [
+    0.056399,
+    0.008087,
+    0.40129,
+    -1.730226049479609,
+    1.662820576290338,
+    -0.7082523508815678
+  ],
+  "tcp_convention": "T_base_tcp: [x,y,z,rx,ry,rz], metres and rotation-vector radians",
+  "gripper_width_m": 0.0,
+  "observation": {
+    "samples": 10,
+    "joint_spread_rad": [0, 0, 0, 0, 0, 0],
+    "arm_status": 0,
+    "motion_status": 0,
+    "err_code": 0
+  }
+}

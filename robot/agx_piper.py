@@ -14,15 +14,18 @@ Hardware SDKs are imported lazily.
 """
 from __future__ import annotations
 
+import importlib.util
 import platform
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 import numpy as np
 
 from ..core.conventions import RobotSpec
 from ..core.mathutils import euler_to_matrix, matrix_to_euler, matrix_to_rotvec, rotvec_to_matrix
-from ..errors import ConnectionFailed, NotSupported, RobotUnavailable
+from ..errors import (ConfigurationError, ConnectionFailed, NotSupported,
+                      RobotUnavailable)
 from .base import Capabilities, RobotBackend, RobotState
 from .mock import MockRobot
 
@@ -64,13 +67,23 @@ class AgxPiperConfig:
     channel: str = 'auto'
     bitrate: int = 1_000_000
     firmware: str = 'auto'
-    speed_percent: int = 50
+    speed_percent: int = 100
     enable_on_connect: bool = True
     # ``False`` keeps the connection read-only: no speed/motion-mode/TCP-offset
     # frames are sent, which matters on a shared master-slave bus where a write
     # reaches both arms and can drop them out of teach mode.
     configure_on_connect: bool = True
     has_gripper: bool = True
+    # Host-side IK. 'auto' attaches PyRoki when it is installed and the
+    # bundled Piper URDF exists; 'none' disables it; 'pyroki' requires it.
+    ik_backend: str = 'auto'
+    ik_urdf: str = ''
+    ik_target_link: str = 'link6'
+    ik_joint_names: list = field(default_factory=lambda: [
+        'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
+    ik_self_collision: bool = False
+    # Compile the host IK once at connect instead of on the first move_p.
+    ik_warmup: bool = True
     gripper_force_n: float = 1.0
     gripper_max_width: float = 0.08
     home_joints: list = field(default_factory=lambda: [0.0, 1.1, -1.1, 0.0, 0.7, 0.0])
@@ -95,11 +108,12 @@ class AgxPiperRobot(RobotBackend):
                  spec: RobotSpec | None = None, mock: bool | None = None):
         spec = spec or RobotSpec.piper_x()
         self.config = config or AgxPiperConfig()
-        super().__init__(spec, Capabilities(servo_j=True, servo_l=False, move_j=True,
+        self.mock = bool(self.config.mock if mock is None else mock)
+        super().__init__(spec, Capabilities(servo_j=True,
+                                            servo_l=False, move_j=True,
                                             move_l=True, move_p=True, freedrive=True,
                                             gripper=bool(self.config.has_gripper),
                                             protective_stop_report=True))
-        self.mock = bool(self.config.mock if mock is None else mock)
         self._sdk = None
         self._robot = None
         self._effector = None
@@ -120,6 +134,55 @@ class AgxPiperRobot(RobotBackend):
         self._mock_robot = (MockRobot(spec, home=self.config.home_joints,
                                       max_velocity=self.config.max_joint_speed)
                             if self.mock else None)
+        if str(self.config.ik_backend).lower() != 'none':
+            self._attach_default_ik()
+
+    def _attach_default_ik(self):
+        """Attach the bundled PyRoki IK unless it is unavailable."""
+        backend = str(self.config.ik_backend or 'auto').lower()
+        if backend not in ('auto', 'pyroki', 'none'):
+            raise ConfigurationError(
+                f"ik_backend must be 'auto', 'pyroki' or 'none', got {backend!r}")
+        if backend == 'none':
+            return
+        try:
+            available = importlib.util.find_spec('pyroki') is not None
+        except Exception:
+            available = False
+        if not available:
+            if backend == 'pyroki':
+                raise ConfigurationError(
+                    'ik_backend="pyroki" but PyRoki is not installed; '
+                    'install it with `pip install -e .[ik]`')
+            return
+        urdf = self.config.ik_urdf or str(
+            Path(__file__).resolve().parent.parent
+            / 'assets' / 'piperx_assets' / 'assets' / 'piper_x.urdf')
+        if not Path(urdf).exists():
+            if backend == 'pyroki' or self.config.ik_urdf:
+                raise ConfigurationError(f'IK URDF not found: {urdf}')
+            return
+        from .ik import PyrokiIK
+        self.set_inverse_kinematics(PyrokiIK(
+            urdf,
+            target_link_name=self.config.ik_target_link,
+            joint_names=self.config.ik_joint_names,
+            self_collision=bool(self.config.ik_self_collision),
+        ))
+
+    def _warmup_ik(self):
+        """Compile the optional host IK at connect time, not on first move_p."""
+        solver = self._ik_solver
+        if solver is None or not hasattr(solver, 'warmup'):
+            return
+        try:
+            sample = self.state()
+            if sample.tcp is None:
+                return
+            solver.warmup(sample.tcp, seed=sample.q)
+        except Exception:
+            # Warmup is an optimization; never fail a good hardware connection.
+            pass
 
     # ------------------------------------------------------------------ sdk
     def _import_sdk(self):
@@ -212,6 +275,20 @@ class AgxPiperRobot(RobotBackend):
         return {}
 
     # ------------------------------------------------------------------ link
+    def connect_read_only(self):
+        if self.connected:
+            raise RobotUnavailable('disconnect before opening a read-only connection')
+        original = self.config
+        self.config = replace(original, enable_on_connect=False, configure_on_connect=False)
+        try:
+            return self.connect()
+        finally:
+            self.config = original
+
+    def prepare_motion(self):
+        super().prepare_motion()
+        return self.enable()
+
     def connect(self):
         if self.mock:
             self._mock_robot.connect()
@@ -256,10 +333,6 @@ class AgxPiperRobot(RobotBackend):
             # connection must not write: it would pull both arms out of
             # leader/follower teaching and make them hold position.
             if self.config.configure_on_connect:
-                try:
-                    self._robot.set_speed_percent(int(np.clip(self.config.speed_percent, 0, 100)))
-                except Exception:
-                    pass
                 if any(abs(float(value)) > 1e-9 for value in self.config.tcp_offset):
                     try:
                         self._robot.set_tcp_offset([float(value) for value in self.config.tcp_offset])
@@ -267,6 +340,13 @@ class AgxPiperRobot(RobotBackend):
                         pass
                 if self.config.enable_on_connect:
                     self.enable()
+                # Apply the speed after enable: the controller can reset the
+                # speed percentage during the enable transition.  Do it before
+                # the motion-mode frame so that frame carries the new value.
+                try:
+                    self._robot.set_speed_percent(int(np.clip(self.config.speed_percent, 0, 100)))
+                except Exception:
+                    pass
                 # ``move_j`` otherwise sends the motion-mode command on every
                 # 50 Hz replay frame, which adds latency and makes Piper playback
                 # visibly stutter.  Disable auto switching and set J mode once.
@@ -283,6 +363,8 @@ class AgxPiperRobot(RobotBackend):
                     except Exception:
                         pass
             self._connected = True
+            if self.config.configure_on_connect and self.config.ik_warmup:
+                self._warmup_ik()
             return self
         except Exception:
             self._close_sdk()
@@ -313,6 +395,19 @@ class AgxPiperRobot(RobotBackend):
         self._close_sdk()
 
     # ----------------------------------------------------------------- state
+    def forward_kinematics(self, joints):
+        if self.mock or self._robot is None:
+            raise NotSupported('Piper FK requires a connected real SDK model')
+        q = np.asarray(joints, float)
+        if q.shape != (self.dof,) or not np.isfinite(q).all():
+            raise ValueError('invalid joint vector for FK')
+        flange = np.asarray(self._robot.fk(q.tolist()), float).reshape(6)
+        rotation = euler_to_matrix(flange[3:], order='xyz')
+        offset = np.asarray(self.config.tcp_offset, float)
+        position = flange[:3] + rotation @ offset[:3]
+        rotation = rotation @ euler_to_matrix(offset[3:], order='xyz')
+        return np.r_[position, matrix_to_rotvec(rotation)]
+
     def _read_gripper(self):
         if self._effector is None:
             return self._last_gripper_width, self._last_gripper_force
@@ -506,6 +601,28 @@ class AgxPiperRobot(RobotBackend):
         self.config.speed_percent = int(np.clip(percent, 0, 100))
         if not self.mock and self._robot is not None:
             self._robot.set_speed_percent(self.config.speed_percent)
+            # The SDK implements this by sending a temporary move_mode=255
+            # mode frame and only restoring its local field. Force the next
+            # motion command to re-send the real mode, otherwise changing
+            # speed after connect can leave the controller ignoring moves.
+            self._motion_mode = ''
+
+    def _set_native_speed_from_rad_s(self, speed) -> None:
+        """Map a generic rad/s speed onto the Piper speed percentage.
+
+        Native Piper moves otherwise ignore ``move_j(speed=...)``.  Mapping
+        keeps one speed knob for both native and generic modes; percent is
+        clipped to 1..100 and ``accel`` remains host-only.
+        """
+        if self.mock or speed is None:
+            return
+        speed = float(speed)
+        if speed <= 0:
+            raise ValueError('speed must be positive')
+        maximum = max(float(self.config.max_joint_speed), 1e-6)
+        percent = int(np.clip(round(speed / maximum * 100.0), 1, 100))
+        if percent != self.config.speed_percent:
+            self.set_speed_percent(percent)
 
     def _ensure_motion_mode(self, mode: str) -> None:
         """Set the Piper motion mode once, not on every servo frame."""
@@ -549,12 +666,13 @@ class AgxPiperRobot(RobotBackend):
         return True
 
     def move_j(self, joints, speed=None, accel=None, wait=True, rate_hz=100.0,
-               timeout=None, abort_event=None) -> bool:
-        if self.mock:
+               timeout=None, abort_event=None, use_native: bool = True) -> bool:
+        if self.mock or not use_native:
             return RobotBackend.move_j(self, joints, speed=speed, accel=accel, wait=wait,
                                        rate_hz=rate_hz, timeout=timeout,
                                        abort_event=abort_event)
         self._check_motion_ready()
+        self._set_native_speed_from_rad_s(speed)
         self._ensure_motion_mode('j')
         target = np.asarray(joints, dtype=float).reshape(-1)
         try:
@@ -608,6 +726,7 @@ class AgxPiperRobot(RobotBackend):
         if self.mock:
             raise NotSupported('Piper mock has no Cartesian model')
         self._check_motion_ready()
+        self._set_native_speed_from_rad_s(speed)
         self._ensure_motion_mode('l')
         target = self._cartesian_target(pose)
         self._robot.move_l([float(value) for value in target])
@@ -615,11 +734,14 @@ class AgxPiperRobot(RobotBackend):
             return True
         return self._wait_cartesian(timeout or 60.0)
 
-    def move_p(self, pose, wait=True, timeout=None) -> bool:
+    def move_p(self, pose, wait=True, timeout=None, use_native: bool = True,
+               speed=None, accel=None) -> bool:
         """Piper point-to-point Cartesian move (toolkit TCP rotvec pose)."""
-        if self.mock:
-            raise NotSupported('Piper mock has no Cartesian model')
+        if self.mock or not use_native:
+            return RobotBackend.move_p(self, pose, wait=wait, timeout=timeout,
+                                       use_native=False, speed=speed, accel=accel)
         self._check_motion_ready()
+        self._set_native_speed_from_rad_s(speed)
         self._ensure_motion_mode('p')
         target = self._cartesian_target(pose)
         self._robot.move_p([float(value) for value in target])

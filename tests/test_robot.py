@@ -41,6 +41,24 @@ def test_generic_move_j_reaches_target():
     assert np.allclose(robot.state().q, [0.3, -0.2, 0.1], atol=0.025)
 
 
+def test_generic_move_j_keeps_tracking_after_rate_limiting():
+    inner = MockRobot(RobotSpec.generic(1), max_velocity=0.2)
+    robot = SafeRobot(inner, SafetyGuard(JointLimits([-1], [1], 0.2)))
+    assert robot.move_j([0.1], speed=1.0, timeout=1.0, use_native=False)
+    assert np.allclose(inner.state().q, [0.1], atol=0.02)
+    assert robot.clamped_commands > 0
+
+
+@pytest.mark.parametrize('speed', [0.1, 10.0])
+def test_generic_move_j_timeout_stops_and_returns_false(monkeypatch, speed):
+    robot = MockRobot(RobotSpec.generic(1))
+    stopped = []
+    monkeypatch.setattr(robot, 'servo_j', lambda joints, dt: True)
+    monkeypatch.setattr(robot, 'stop_motion', lambda: stopped.append(True))
+    assert robot.move_j([0.1], speed=speed, timeout=0.05, use_native=False) is False
+    assert stopped == [True]
+
+
 def test_safety_wrapper_clamps_and_rejects():
     robot = MockRobot(RobotSpec.generic(2), max_velocity=10.0)
     guard = SafetyGuard(JointLimits([-0.5, -0.5], [0.5, 0.5], 100.0), max_step_rad=1.0)
@@ -52,6 +70,32 @@ def test_safety_wrapper_clamps_and_rejects():
                        SafetyGuard(JointLimits([-0.5], [0.5], 100.0), reject_on_limit=True))
     with pytest.raises(SafetyViolation):
         strict.servo_j([2.0], dt=0.1)
+
+
+def test_move_j_accepts_use_native_switch():
+    robot = build_robot('piper_x', mock=True)
+    target = [0.1, 0.7, -0.7, 0.1, 0.1, 0.1]
+    assert robot.move_j(target, speed=0.5, rate_hz=200,
+                        timeout=2.0, use_native=False)
+    assert np.allclose(robot.state().q, target, atol=0.025)
+
+
+def test_default_safety_velocity_and_piper_speed():
+    robot = build_robot('piper_x', mock=True)
+    assert robot.inner.config.speed_percent == 100
+    default_velocity = JointLimits([-1], [1]).max_velocity[0]
+    assert np.allclose(robot.guard.limits.max_velocity, default_velocity)
+    assert np.allclose(robot.guard.limits.max_step(0.01), default_velocity * 0.01)
+    assert np.allclose(JointLimits.symmetric(2).max_velocity, default_velocity)
+
+
+def test_explicit_safety_velocity_and_piper_speed_override_defaults():
+    robot = build_robot({'kind': 'piper_x',
+                         'options': {'speed_percent': 30},
+                         'limits': {'max_velocity': 0.4}}, mock=True)
+    assert robot.inner.config.speed_percent == 30
+    assert np.allclose(robot.guard.limits.max_velocity, 0.4)
+    assert np.allclose(JointLimits.symmetric(2, max_velocity=0.4).max_velocity, 0.4)
 
 
 def test_dict_ur_profile_uses_ur5e_spec():

@@ -76,10 +76,27 @@ def build_robot(profile: RobotProfile | dict | str = 'mock', mock: bool | None =
         dof = robot.dof
         lower = profile.limits.get('lower', default_lower or [-3.15] * dof)
         upper = profile.limits.get('upper', default_upper or [3.15] * dof)
-        velocity = profile.limits.get('max_velocity', 1.0)
-        guard = SafetyGuard(JointLimits(lower, upper, velocity),
+        velocity = profile.limits.get('max_velocity')
+        joint_limits = (JointLimits(lower, upper) if velocity is None
+                else JointLimits(lower, upper, velocity))
+        guard = SafetyGuard(joint_limits,
                             max_step_rad=float(profile.limits.get('max_step_rad', 0.8)))
-        robot = SafeRobot(robot, guard,
+        workspace = None
+        settings = profile.limits.get('workspace')
+        if settings:
+            from .core.workspace_guard import WorkspaceGuard
+            from .core.safety_envelope import SafetyEnvelope
+            if settings.get('envelope_path'):
+                envelope = SafetyEnvelope.load(settings['envelope_path'])
+                lower, upper = envelope.tcp_lower[:3], envelope.tcp_upper[:3]
+            else:
+                lower, upper = settings['lower_m'], settings['upper_m']
+            workspace = WorkspaceGuard(lower, upper, robot.forward_kinematics,
+                                       margin_m=float(settings.get('margin_m', 0.03)),
+                                       step_rad=float(settings.get('step_rad', 0.01)),
+                                       lower_enabled=settings.get('lower_enabled', [True]*3),
+                                       upper_enabled=settings.get('upper_enabled', [True]*3))
+        robot = SafeRobot(robot, guard, workspace=workspace,
                           raise_on_limit=bool(profile.limits.get('raise_on_limit', True)))
     return robot
 

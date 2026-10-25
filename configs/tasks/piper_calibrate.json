@@ -32,7 +32,8 @@
         "width": 640,
         "height": 480,
         "fps": 30,
-        "depth": true
+        "depth": true,
+        "serial": "263022075825"
       }
     ]
   },
@@ -44,8 +45,12 @@
       9,
       6
     ],
-    "square_size": 0.025,
-    "min_samples": 8,
+    "square_size": 0.026,
+    "min_samples": 27,
+    "quality_protocol": true,
+    "frames_per_pose": 6,
+    "verify_after": true,
+    "verify_samples": 8,
     "path": "",
     "apply": false,
     "board": "charuco",
@@ -54,7 +59,7 @@
       10
     ],
     "aruco_dict": "DICT_5X5_100",
-    "marker_size": 0.0194,
+    "marker_size": 0.0195,
     "min_corners": 6
   }
 }

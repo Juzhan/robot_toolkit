@@ -12,14 +12,21 @@
       "interface": "auto",
       "channel": "auto",
       "firmware": "default",
-      "enable_on_connect": true,
+      "enable_on_connect": false,
       "configure_on_connect": true,
       "speed_percent": 20,
       "has_gripper": true
     },
     "limits": {
       "max_velocity": 1.0,
-      "max_step_rad": 0.8
+      "max_step_rad": 0.8,
+      "workspace": {
+        "envelope_path": "outputs/robot_tasks/safety_envelope/safety_envelope.json",
+        "margin_m": 0.03,
+        "step_rad": 0.01,
+        "lower_enabled": [false, true, true],
+        "upper_enabled": [false, true, false]
+      }
     },
     "safety": true
   },
@@ -37,7 +44,8 @@
         "width": 640,
         "height": 480,
         "fps": 30,
-        "depth": true
+        "depth": true,
+        "serial": "263022075825"
       }
     ]
   },
@@ -49,24 +57,33 @@
       8,
       5
     ],
-    "square_size": 0.025,
-    "min_samples": 8,
+    "square_size": 0.026,
+    "min_samples": 27,
+    "quality_protocol": true,
+    "frames_per_pose": 6,
+    "verify_samples": 8,
+    "verify_after": true,
+    "intrinsics_mode": "auto",
     "path": "",
     "apply": false,
     "auto": true,
     "poses": [],
-    "pose_count": 12,
+    "pose_plan_path": "outputs/calibration_plans/wrist_guided_v1/plan.json",
+    "pose_count": 128,
     "pose_delta_rad": 0.25,
     "pose_seed": 0,
-    "settle_s": 0.8,
+    "settle_s": 3.0,
     "speed_scale": 0.2,
+    "safety_path": "outputs/robot_tasks/safety_envelope/safety_envelope.json",
+    "require_safety_envelope": true,
+    "require_initial_board": true,
     "board": "charuco",
     "squares": [
       7,
       10
     ],
     "aruco_dict": "DICT_5X5_100",
-    "marker_size": 0.0194,
+    "marker_size": 0.0195,
     "min_corners": 6
   }
 }

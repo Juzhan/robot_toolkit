@@ -1,0 +1,1 @@
+Piper X URDF/STL copied from local agx_arm_sim/agx_arm_description/agx_arm_urdf/piper_x (MIT). Visual DAE removed; mesh references made relative. Source URDF originally from assets/piper_x/curobo/piper_x.urdf. See LICENSE.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import abc
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -23,6 +23,7 @@ class Capabilities:
     move_j: bool = True
     move_l: bool = False
     move_p: bool = False
+    inverse_kinematics: bool = False
     freedrive: bool = False
     gripper: bool = False
     protective_stop_report: bool = True
@@ -88,6 +89,7 @@ class RobotBackend(abc.ABC):
         self.spec = spec
         self.capabilities = capabilities or Capabilities()
         self._connected = False
+        self._ik_solver = None
 
     # ------------------------------------------------------------------ link
     @property
@@ -108,6 +110,20 @@ class RobotBackend(abc.ABC):
 
     def disconnect(self) -> None:
         self._connected = False
+
+    def connect_read_only(self) -> 'RobotBackend':
+        """Connect without enabling/configuring motion; unsupported fails closed."""
+        raise NotSupported(f'{self.name}: read-only connection is unavailable')
+
+    def prepare_motion(self) -> bool:
+        """Prepare an already connected controller without commanding a pose.
+
+        Backends requiring explicit motor enable override this hook. Call only
+        after task preflight; never use for passive observation or planning.
+        """
+        if not self.connected:
+            raise Aborted('connect before preparing motion')
+        return True
 
     def __enter__(self):
         return self.connect()
@@ -160,6 +176,34 @@ class RobotBackend(abc.ABC):
         """Optional controller diagnostics for logs and tests."""
         return {}
 
+    def forward_kinematics(self, joints):
+        """Return base-to-TCP [metres, rotation vector] without commanding motion."""
+        raise NotSupported(f'{self.name}: forward kinematics is unavailable')
+
+    def inverse_kinematics(self, pose, seed=None):
+        """Return joint angles for a TCP pose, or raise ``NotSupported``.
+
+        ``pose`` uses the toolkit contract ``[x, y, z, rx, ry, rz]`` (metres
+        and a rotation vector).  Backends with a native Cartesian mover may
+        leave this unimplemented and override :meth:`move_p` instead.  A
+        solver can be attached at runtime with :meth:`set_inverse_kinematics`.
+        """
+        if self._ik_solver is not None:
+            return self._ik_solver.solve(pose, seed=seed)
+        raise NotSupported(f'{self.name}: inverse kinematics is unavailable')
+
+    def set_inverse_kinematics(self, solver):
+        """Attach a host-side IK solver to this backend.
+
+        ``solver`` must expose ``solve(pose, seed=None) -> joints``.  The
+        capability flag is updated so callers can branch and ``move_p`` can
+        use the host IK path.
+        """
+        self._ik_solver = solver
+        self.capabilities = replace(
+            self.capabilities, inverse_kinematics=solver is not None)
+        return self
+
     def init_period(self):
         """Start an optional controller-side real-time period.
 
@@ -190,12 +234,17 @@ class RobotBackend(abc.ABC):
 
     def move_j(self, joints, speed: float | None = None, accel: float | None = None,
                wait: bool = True, rate_hz: float = 100.0, timeout: float | None = None,
-               abort_event=None) -> bool:
+               abort_event=None, use_native: bool = True) -> bool:
         """Interpolate from the current configuration to ``joints``.
 
         Uses a cosine ease-in/ease-out profile.  Backends with a native planner
-        should override this method.
+        should override this method.  ``use_native`` is accepted for a uniform
+        call signature; this base implementation is always generic.
+        A timeout stops motion and returns ``False``.
         """
+        if not self.capabilities.servo_j:
+            raise NotSupported(
+            f'{self.name}: generic move_j needs servo_j')
         target = np.asarray(joints, dtype=float)
         start = self.wait_for_state().q
         if start is None:
@@ -224,18 +273,71 @@ class RobotBackend(abc.ABC):
                 return False
             if time.monotonic() > deadline:
                 self.stop_motion()
-                raise TimeoutError(f'{self.name}: move_j did not finish in {timeout:.1f}s')
+                return False
             # Even with wait=False the base class has to stream the interpolation;
             # only the final settle is skipped.
             time.sleep(dt)
         if not wait:
             return True
-        return self.wait_until_settled(target, timeout=timeout, rate_hz=rate_hz,
-                                       tolerance=0.02, abort_event=abort_event)
+        while True:
+            if abort_event is not None and abort_event.is_set():
+                self.stop_motion()
+                raise Aborted('motion aborted')
+            current = self.state().q
+            error = (float('inf') if current is None
+                     else float(np.max(np.abs(current - target))))
+            if error <= 0.02:
+                return True
+            if time.monotonic() >= deadline:
+                self.stop_motion()
+                return False
+            if not self.servo_j(target, dt):
+                self.stop_motion()
+                return False
+            time.sleep(dt)
 
     def move_l(self, pose, speed: float | None = None, accel: float | None = None,
                wait: bool = True) -> bool:
         raise NotSupported(f'{self.name}: Cartesian linear move is not available')
+
+    def move_p(self, pose, wait: bool = True, timeout: float | None = None,
+               use_native: bool = True, speed: float | None = None,
+               accel: float | None = None) -> bool:
+        """Point-to-point Cartesian move to ``[x, y, z, rx, ry, rz]``.
+
+        Native P movers (currently Piper) override this.  The generic path
+        resolves ``pose`` through :meth:`inverse_kinematics` and then calls
+        :meth:`move_j`; if the backend has no IK it falls back to
+        :meth:`move_l` when that capability is advertised.  ``use_native=False``
+        forces the generic IK + generic joint interpolation path; ``speed``
+        and ``accel`` are forwarded to that generic ``move_j``.
+        """
+        seed = None
+        try:
+            seed = self.state().q
+        except Exception:
+            seed = None
+        joints = None
+        try:
+            joints = self.inverse_kinematics(pose, seed=seed)
+        except TypeError:
+            # Backends with an older IK signature do not accept a seed.
+            joints = self.inverse_kinematics(pose)
+        except NotSupported:
+            joints = None
+        if joints is not None and len(joints) > 0:
+            if use_native:
+                return self.move_j(joints, speed=speed, accel=accel,
+                                   wait=wait, timeout=timeout)
+            return RobotBackend.move_j(self, joints, speed=speed, accel=accel,
+                                       wait=wait, timeout=timeout)
+        if self.capabilities.inverse_kinematics:
+            raise NotSupported(
+                f'{self.name}: inverse kinematics failed for pose {pose}')
+        if self.capabilities.move_l:
+            return self.move_l(pose, wait=wait)
+        raise NotSupported(
+            f'{self.name}: no inverse kinematics or linear Cartesian move for move_p')
 
     def stop_motion(self, deceleration: float = 2.0) -> bool:
         """Best-effort stop. Backends override when they have a native stop."""

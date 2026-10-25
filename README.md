@@ -311,6 +311,87 @@ run.bat piper_calibrate_auto --yes
 
 ⚠️ 主从**硬件联动**下不能用这个自动模式（发运动指令会打断联动）；那种接线只能用手动摆位版 `piper_calibrate`。
 
+#### 标定质量协议与独立验证
+
+粗标定引导的固定视角规划通过 `calibrate/plan_cli.py` 生成：
+
+模块边界、其他机械臂接入要求及离线测试见
+[标定与安全模块复用](docs/calibration_architecture.md)。
+
+```bash
+python -m robot_toolkit.calibrate.plan_cli --task configs/tasks/piper_calibrate_auto.json \
+  --solution /path/to/solution.json --anchor configs/poses/piper_x_default.json \
+  --out outputs/calibration_plans/new_plan
+python run.py piper_calibrate_auto --pose-plan outputs/calibration_plans/new_plan/plan.json --yes
+```
+
+规划只读取机器人/FK，不使能、不发运动目标。候选采用确定性 Halton 关节采样
+（保持原有 ±0.25 rad 幅度），利用粗标定预测整板位置，要求 24 px 画面余量、
+6%–75% 图像占比、≤55° 斜视角，并按相机朝向、画面位置和距离的差异挑选视角。
+规划结果包含预测轮廓 SVG、27 个 train + 8 个 verify 位姿和安全边界快照。
+这是基于 FK 的可见性筛选，不是 IK 笛卡尔轨迹规划，也不能保证一定提高标定精度。
+
+当前 `piper_calibrate_auto` 默认使用本地生成的
+`outputs/calibration_plans/wrist_guided_v1/plan.json`，等待时间为 3 秒。
+重跑同一清单会先检查到保存 anchor 的路径并低速回位，然后按固定顺序采样。
+任何到位/检测失败都会中止，保留已采数据，避免样本角色错位；安全边界、
+相机/板参数、FK 模型变化时拒绝旧清单。相机安装和标定板移动后应重新粗标定与规划。
+每轮保存清单 ID、目标关节、实际关节、到位偏差、等待时间与原始图像。
+`--verify-solution` 是另一套独立验证入口，会清除默认清单，不允许与 `--pose-plan` 混用。
+
+`piper_calibrate` / `piper_calibrate_auto` 现采用旧 UR5 协议：7×10 ChArUco、
+26 mm 方格、19.5 mm 标记、DICT_5X5_100；27 个有效标定位姿，每处聚合 6 个
+不同的新帧，再采 8 个留出验证位姿。`pose_count=128` 是自动模式的候选上限，
+不是样本数；目标为 35 个有效位姿，板子需要在整个过程中保持固定。
+保留 Piper 现有的关节扰动幅度、停稳时间和速度，未复制 UR5 的笛卡尔运动幅度。
+自动任务通过 `robot.limits.workspace` 启用末端空间保护：使用保存包络的 XYZ
+边界向内收缩 30 mm，按 ≤0.01 rad 的关节间隔检查 FK 路径，执行时检查实测
+TCP、FK 一致性及每个插值目标。标定规划另留 10 mm 跟踪余量，硬件关节限位
+仍参与筛选。仅支持有可信 FK 的后端；缺失 FK/反馈时拒绝运动。
+这属于采样式末端保护，不是连续碰撞证明，也不覆盖肘部、夹具和墙面的碰撞。
+当前场地配置只启用 Y 双侧与 Z 下侧：
+`lower_enabled=[false,true,true]`、`upper_enabled=[false,true,false]`（XYZ 顺序）。
+以当前保存包络计，保护边界为 Y ∈ [-0.142934, 0.203792] m、
+Z ≥ 0.114475 m；标定候选路径另留 0.01 m。它们是拖动范围推导的操作边界，
+不是实测墙面/桌面位置。若更换夹具或相机安装，需重新核对末端占用空间。
+
+数值层 `calibrate/quality.py` 不依赖机器人 SDK，捕获层 `calibrate/protocol.py`
+只使用通用相机/机器人接口。求解先用 AX=XB 初始化，再做鲁棒重投影优化和异常
+视角剔除；以两折交叉验证选择原厂或重标内参，PnP、求解和保存使用同一套内参。
+依赖 NumPy、OpenCV（含 aruco）和 SciPy。硬件适配和运动规划仍由任务配置决定。
+
+每次运行产生时间戳子目录，保留 `views.json`、原始图片、`solution.json`、
+`calibration.json`、`report.json`、`verify.json` 和 `overlays/`。
+绿色圈为检测点、红色十字为预测点、黄色线为残差。离线数据没有图片时使用空白
+底图；不会伪造实拍画面。样本不足会保存观测与 `incomplete.json`，不会产出新解。
+拟合满足 27 个而验证不足 8 个时，会保存候选解并将验证标为不足，退出码为 1。
+
+验证使用冻结的解，报告每视角/均值/最差像素误差、深度误差及独立重解偏差。
+腕部均值阈值为通过 ≤1 px、一般 ≤2 px；外部为 ≤1.5 / ≤3 px。
+深度分别使用 4/8 mm 和 6/12 mm 阈值，单独报告；`status` 是重投影判定，
+不能替代真实任务的定位精度验收。独立重解保持所选内参不变，避免把内参变化混入外参漂移。
+重复采样位姿、验证复用拟合位姿、相机/板子参数不匹配会拒绝。
+结果默认不自动应用。
+
+已有新格式解时，可以单独采 8 个验证位姿（自动模式仍需要 `--yes`）：
+
+```bash
+python run.py piper_calibrate_auto --verify-solution /absolute/path/solution.json --yes
+# 手动摆位/被动采样使用 piper_calibrate，空格采一个多帧位姿，s 保存。
+python run.py piper_calibrate --verify-solution /absolute/path/solution.json
+```
+
+旧的仅包含 `calibration.json` 的 Piper 结果缺少原始观测和固定板位姿，
+且使用了旧尺寸，不能直接补做这种验证，需要重新采集。
+
+完全离线地重算、验证（`--out` 使用新目录）：
+
+```bash
+python -m robot_toolkit.calibrate.quality_cli solve views.json --out solved
+python -m robot_toolkit.calibrate.quality_cli verify verify_views.json --solution solved/solution.json --out checked
+python -m robot_toolkit.examples.calibration_regression /path/ur5_calib_package_20261020.zip --out regression
+```
+
 解释器选择（不写死任何本机路径）：
 
 1. 环境变量 `ROBOT_TOOLKIT_PYTHON`
