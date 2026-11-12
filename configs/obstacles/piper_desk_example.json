@@ -1,0 +1,10 @@
+{
+  "note": "Base frame (base_link, metres; z up, base bottom at z=0). The arm, gripper and wrist camera are padded spheres (padding_m) that must stay margin_m away from every obstacle. Plane: the side opposite normal is solid. Box: center/size(/rpy). link1 only spins above the base, so the table ignores it.",
+  "padding_m": 0.01,
+  "margin_m": 0.02,
+  "ignore_links": ["base_link"],
+  "obstacles": [
+    {"type": "plane", "name": "table", "point": [0, 0, 0], "normal": [0, 0, 1], "ignore_links": ["link1"]},
+    {"type": "box", "name": "front_wall", "center": [0.46, 0, 0.3], "size": [0.02, 0.8, 0.6]}
+  ]
+}

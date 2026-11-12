@@ -5,13 +5,13 @@ from __future__ import annotations
 import abc
 import math
 import time
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, is_dataclass, replace
 
 import numpy as np
 
 from ..core.conventions import RobotSpec
 from ..core.mathutils import pose_error
-from ..errors import Aborted, NotSupported, RobotUnavailable, SafetyViolation
+from ..errors import Aborted, NotSupported
 
 
 def _json_value(value):
@@ -27,12 +27,18 @@ def _json_value(value):
         return None
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_value({item.name: getattr(value, item.name) for item in fields(value)})
     return str(value)
 
 
 @dataclass(frozen=True)
 class Capabilities:
-    """Advertised features; callers branch on these instead of on robot names."""
+    """Advertised features; callers branch on these instead of on robot names.
+
+    ``nonblocking_moves`` names native methods whose ``wait=False`` submits
+    without host-side trajectory streaming. It never covers use_native=False.
+    """
 
     servo_j: bool = True
     servo_l: bool = False
@@ -43,6 +49,10 @@ class Capabilities:
     freedrive: bool = False
     gripper: bool = False
     protective_stop_report: bool = True
+    servo_j_kind: str = 'unspecified'
+    servo_j_timing: str = 'unspecified'
+    stop_motion_kind: str = 'unspecified'
+    nonblocking_moves: tuple[str, ...] = ()
 
 
 @dataclass
@@ -99,7 +109,7 @@ class RobotState:
         Non-finite numbers become null; opaque vendor extras become strings.
         This does not claim that separately received sensors are synchronized.
         """
-        payload = asdict(self)
+        payload = {item.name: getattr(self, item.name) for item in fields(self)}
         if not self.protective_stop_known and not self.protective_stop:
             payload['protective_stop'] = None
         return _json_value(payload)
@@ -310,7 +320,13 @@ class RobotBackend(abc.ABC):
     # ---------------------------------------------------------------- motion
     @abc.abstractmethod
     def servo_j(self, joints, dt: float) -> bool:
-        """Send one joint target valid for ``dt`` seconds. Return success."""
+        """Request an absolute joint target; True is not arrival confirmation.
+
+        Consult capabilities.servo_j_kind and servo_j_timing: dt may be a
+        controller argument, a host scheduling hint, or a simulation step.
+        This interface does not guarantee hardware expiry after dt, a native
+        real-time servo, or even a transmitted frame when a backend throttles.
+        """
 
     def servo_l(self, pose, dt: float) -> bool:
         raise NotSupported(f'{self.name}: Cartesian servo is not available')
@@ -318,13 +334,19 @@ class RobotBackend(abc.ABC):
     def move_j(self, joints, speed: float | None = None, accel: float | None = None,
                wait: bool = True, rate_hz: float = 100.0, timeout: float | None = None,
                abort_event=None, use_native: bool = True) -> bool:
-        """Interpolate from the current configuration to ``joints``.
+        """Stream a min-jerk move from the current configuration to ``joints``.
 
-        Uses a cosine ease-in/ease-out profile.  Backends with a native planner
-        should override this method.  ``use_native`` is accepted for a uniform
-        call signature; this base implementation is always generic.
-        A timeout stops motion and returns ``False``.
+        ``speed`` (default 0.5 rad/s) and ``accel`` bound the peak joint
+        velocity and acceleration.  The move runs through the monitored servo
+        stream (:func:`~robot_toolkit.control.trajectory.run_trajectory`), so
+        tracking error and stale feedback stop it like any other stream.
+        Backends with a native planner should override this method.
+        ``use_native`` is accepted for a uniform call signature; this base
+        implementation is always generic.  A timeout stops motion and
+        returns ``False``.
         """
+        from ..control.trajectory import min_jerk, run_trajectory
+
         self._motion_detail = {'reason': None, 'phase': 'interpolation'}
         if not self.capabilities.servo_j:
             raise NotSupported(
@@ -333,59 +355,21 @@ class RobotBackend(abc.ABC):
         start = self.wait_for_state().q
         if start is None:
             raise Aborted('no joint state available')
-        delta = target - start
-        distance = float(np.max(np.abs(delta)))
-        if distance < 1e-9:
+        start = np.asarray(start, dtype=float)
+        if float(np.max(np.abs(target - start))) < 1e-9:
             return True
         speed = float(speed if speed is not None else 0.5)
-        if speed <= 0:
-            raise ValueError('speed must be positive')
-        duration = distance / speed
-        if accel is not None and accel > 0:
-            duration = max(duration, 2.0 * math.sqrt(distance / float(accel)))
-        timeout = float(timeout if timeout is not None else duration * 3.0 + 5.0)
         dt = 1.0 / max(1.0, float(rate_hz))
-        steps = max(1, int(math.ceil(duration * rate_hz)))
-        deadline = time.monotonic() + timeout
-        for index in range(1, steps + 1):
-            if abort_event is not None and abort_event.is_set():
-                self._motion_detail['reason'] = 'aborted'
-                self.stop_motion()
-                raise Aborted('motion aborted')
-            progress = index / steps
-            eased = 0.5 - 0.5 * math.cos(math.pi * progress)
-            if not self.servo_j(start + delta * eased, dt):
-                self._motion_detail['reason'] = 'servo_rejected'
-                return False
-            if time.monotonic() > deadline:
-                self._motion_detail['reason'] = 'timeout'
-                self.stop_motion()
-                return False
-            # Even with wait=False the base class has to stream the interpolation;
-            # only the final settle is skipped.
-            time.sleep(dt)
-        if not wait:
-            return True
-        self._motion_detail['phase'] = 'tracking'
-        while True:
-            if abort_event is not None and abort_event.is_set():
-                self._motion_detail['reason'] = 'aborted'
-                self.stop_motion()
-                raise Aborted('motion aborted')
-            current = self.state().q
-            error = (float('inf') if current is None
-                     else float(np.max(np.abs(current - target))))
-            if error <= 0.02:
-                return True
-            if time.monotonic() >= deadline:
-                self._motion_detail['reason'] = 'timeout'
-                self.stop_motion()
-                return False
-            if not self.servo_j(target, dt):
-                self._motion_detail['reason'] = 'servo_rejected'
-                self.stop_motion()
-                return False
-            time.sleep(dt)
+        q = min_jerk(start, target, dt, speed, accel if accel and accel > 0 else None)
+        result = run_trajectory(self, q, dt, wait=wait, timeout=timeout,
+                                abort_event=abort_event)
+        self._motion_detail = {'reason': None if result.ok else result.reason,
+                               'phase': result.phase}
+        if result.error:
+            self._motion_detail['error'] = result.error
+        if result.reason == 'aborted':
+            raise Aborted('motion aborted')
+        return result.ok
 
     def move_l(self, pose, speed: float | None = None, accel: float | None = None,
                wait: bool = True) -> bool:
@@ -429,118 +413,6 @@ class RobotBackend(abc.ABC):
             return self.move_l(pose, wait=wait)
         raise NotSupported(
             f'{self.name}: no inverse kinematics or linear Cartesian move for move_p')
-
-    def move_j_result(self, joints, *, joint_tolerance: float = 0.02, **kwargs) -> dict:
-        """Run move_j and return feedback/error evidence; old move_j stays bool.
-
-        Blocking completion is checked against measured joints. A nonblocking
-        call never claims arrival. Failures request a best-effort stop, without
-        retrying, enabling, or disabling the controller.
-        """
-        return self._move_result('move_j', joints, (joint_tolerance,), kwargs)
-
-    def move_p_result(self, pose, *, position_tolerance: float = 0.005,
-                      rotation_tolerance: float = 0.05, **kwargs) -> dict:
-        """Run move_p and check measured TCP translation and SO(3) angle."""
-        return self._move_result('move_p', pose,
-                                 (position_tolerance, rotation_tolerance), kwargs)
-
-    def _move_result(self, operation, target, tolerances, kwargs) -> dict:
-        started = time.monotonic()
-        self._motion_detail = None
-        result = {
-            'schema_version': 1, 'operation': operation, 'ok': False,
-            'command_ok': None, 'reached': None, 'reason': None, 'error': None,
-            'target': None, 'parameters': _json_value(kwargs),
-            'tolerances': ({'joint_rad': tolerances[0]} if operation == 'move_j' else
-                           {'position_m': tolerances[0], 'rotation_rad': tolerances[1]}),
-            'before': None, 'after': None,
-            'joint_error_rad': None, 'position_error_m': None,
-            'rotation_error_rad': None,
-            'stop': {'requested': False, 'command_ok': None, 'error': None,
-                     'physically_stopped': None, 'feedback': None},
-        }
-        dispatched = False
-        try:
-            values = np.asarray(target, dtype=float)
-            expected = self.dof if operation == 'move_j' else 6
-            if values.shape != (expected,) or not np.all(np.isfinite(values)):
-                raise ValueError(f'target must contain {expected} finite values')
-            if any(not math.isfinite(value) or value <= 0 for value in tolerances):
-                raise ValueError('tolerances must be positive and finite')
-            result['target'] = values.tolist()
-            result['before'] = self.status()
-            before = result['before']['state']
-            if not result['before']['connected']:
-                result['reason'] = 'disconnected'
-            elif before is None or before['q'] is None:
-                result['reason'] = 'feedback_unavailable'
-            elif not before['connected']:
-                result['reason'] = 'disconnected'
-            elif (len(before['q']) != self.dof or
-                  not np.all(np.isfinite(np.asarray(before['q'], dtype=float)))):
-                result['reason'] = 'feedback_unavailable'
-            elif before['protective_stop'] or before['fault'] or before['enabled'] is False:
-                result['reason'] = 'not_ready'
-            else:
-                dispatched = True
-                result['command_ok'] = bool(getattr(self, operation)(values, **kwargs))
-        except Exception as exc:
-            result['error'] = {'type': type(exc).__name__, 'message': str(exc)}
-            result['reason'] = (
-                'safety_rejected' if isinstance(exc, SafetyViolation) else
-                'unsupported' if isinstance(exc, NotSupported) else
-                'aborted' if isinstance(exc, Aborted) else
-                'timeout' if isinstance(exc, TimeoutError) else
-                'unavailable' if isinstance(exc, RobotUnavailable) else
-                'invalid_argument' if isinstance(exc, (ValueError, TypeError)) else
-                'backend_error')
-        result['after'] = self.status()
-        after = result['after']['state']
-        if result['target'] is not None and after is not None:
-            observed = after['q'] if operation == 'move_j' else after['tcp']
-            if observed is not None:
-                observed = np.asarray(observed, dtype=float)
-                if observed.shape == values.shape and np.all(np.isfinite(observed)):
-                    if operation == 'move_j':
-                        error = float(np.max(np.abs(observed - values)))
-                        result['joint_error_rad'] = error
-                        reached = error <= tolerances[0]
-                    else:
-                        translation, rotation = pose_error(observed, values)
-                        result['position_error_m'] = translation
-                        result['rotation_error_rad'] = rotation
-                        reached = translation <= tolerances[0] and rotation <= tolerances[1]
-                    if dispatched and kwargs.get('wait', True):
-                        result['reached'] = bool(reached)
-        if result['reason'] is None:
-            if not result['command_ok']:
-                detail = self._motion_detail or {}
-                result['reason'] = detail.get('reason') or 'backend_failed'
-            elif not result['after']['connected'] or (after is not None and not after['connected']):
-                result['reason'] = 'disconnected'
-            elif after is not None and (after['protective_stop'] or after['fault']):
-                result['reason'] = 'not_ready'
-            elif not kwargs.get('wait', True):
-                result['reason'] = 'accepted'
-                result['ok'] = True
-            elif result['reached'] is None:
-                result['reason'] = 'feedback_unavailable'
-            elif result['reached']:
-                result['reason'] = 'reached'
-                result['ok'] = True
-            else:
-                result['reason'] = 'tolerance_not_met'
-        if dispatched and not result['ok']:
-            result['stop']['requested'] = True
-            try:
-                result['stop']['command_ok'] = bool(self.stop_motion())
-            except Exception as exc:
-                result['stop']['error'] = {'type': type(exc).__name__, 'message': str(exc)}
-            result['stop']['feedback'] = self.status()
-        result['motion_detail'] = self._motion_detail
-        result['elapsed_s'] = time.monotonic() - started
-        return _json_value(result)
 
     def stop_motion(self, deceleration: float = 2.0) -> bool:
         """Best-effort stop. Backends override when they have a native stop."""

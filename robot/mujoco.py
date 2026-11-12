@@ -130,7 +130,10 @@ class MujocoRobot(RobotBackend):
         super().__init__(spec, Capabilities(servo_j=True, servo_l=True, move_j=True,
                                             move_l=True, inverse_kinematics=True,
                                             freedrive=False,
-                                            gripper=gripper_actuator is not None))
+                                            gripper=gripper_actuator is not None,
+                                            servo_j_kind='simulation',
+                                            servo_j_timing='simulation_step',
+                                            stop_motion_kind='unsupported'))
         self.joint_names = joint_names
         self.qpos_indices = np.array([self.model.joint(name).qposadr[0] for name in joint_names])
         self.dof_indices = np.array([self.model.joint(name).dofadr[0] for name in joint_names])

@@ -135,6 +135,10 @@ class ThreadedCamera(Camera):
         raise NotImplementedError
 
     def _publish(self, rgb, depth=None, color_meta=None, depth_meta=None) -> None:
+        """Publish owned arrays; the producer must not mutate them afterwards.
+
+        Readers retain these buffers while copying outside the publication lock.
+        """
         stamp = time.perf_counter()
         color_meta = dict(color_meta or {})
         color_meta['host_time'] = stamp
@@ -150,11 +154,13 @@ class ThreadedCamera(Camera):
 
     def read(self) -> CameraFrame:
         with self._lock:
-            rgb = None if self._rgb is None else self._rgb.copy()
-            depth = None if self._depth is None else self._depth.copy()
+            rgb = self._rgb
+            depth = self._depth
             stamp = self._stamp
             color_meta = dict(self._color_meta)
             depth_meta = dict(self._depth_meta)
+        rgb = None if rgb is None else rgb.copy()
+        depth = None if depth is None else depth.copy()
         return CameraFrame(name=self.name, t=stamp, rgb=rgb, depth=depth,
                            intrinsics=self.intrinsics, distortion=self.distortion,
                            T_world_camera=self.T_world_camera,

@@ -28,6 +28,8 @@ classifiers = [
 dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
+vision = ["opencv-python>=4.8,<5"]
+reconstruction = ["open3d>=0.19,<0.20"]
 control = ["ruckig>=0.12"]
 # Optional host-side IK. PyRoki is not on PyPI; install it from source.
 ik = ["pyroki @ git+https://github.com/chungmin99/pyroki.git"]
@@ -56,4 +58,4 @@ packages = [
 
 [tool.setuptools.package-data]
 # Demo task configs ship with the package so `run.bat <demo>` works after install.
-robot_toolkit = ["configs/tasks/*.json"]
+robot_toolkit = ["configs/tasks/*.json", "configs/external_tools.json"]

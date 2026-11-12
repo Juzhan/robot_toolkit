@@ -96,7 +96,12 @@ def build_robot(profile: RobotProfile | dict | str = 'mock', mock: bool | None =
                                        step_rad=float(settings.get('step_rad', 0.01)),
                                        lower_enabled=settings.get('lower_enabled', [True]*3),
                                        upper_enabled=settings.get('upper_enabled', [True]*3))
-        robot = SafeRobot(robot, guard, workspace=workspace,
+        collision = None
+        obstacles = profile.limits.get('obstacles')
+        if obstacles:
+            from .core.collision import CollisionGuard
+            collision = CollisionGuard.from_config(obstacles)
+        robot = SafeRobot(robot, guard, workspace=workspace, collision=collision,
                           raise_on_limit=bool(profile.limits.get('raise_on_limit', True)))
     return robot
 

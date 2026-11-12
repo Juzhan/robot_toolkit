@@ -134,7 +134,7 @@ def test_replay_can_use_a_continuous_reference():
     result = replayer.run(trajectory, speed_scale=1.0, realtime=False)
     assert not result.aborted, result.reason
     assert result.continuous
-    assert result.reference_backend in ('ruckig', 'fallback')
+    assert result.reference_backend == 'ruckig'
     assert robot.state().q[0] == pytest.approx(0.5, abs=0.05)
 
 
@@ -148,3 +148,19 @@ def test_replay_aborts_on_operator_request():
     result = replayer.run(trajectory, speed_scale=1.0, realtime=False, abort_event=abort)
     assert result.aborted
     assert result.reason == 'operator abort'
+
+
+def test_replay_gripper_settle_pauses_the_plan_without_a_jump():
+    trajectory = _trajectory()
+    robot = MockRobot(RobotSpec.generic(6), max_velocity=5.0)
+    replayer = Replayer(robot, MockGripper(max_width=0.085), rate=125.0,
+                        close_settle_s=0.4, open_settle_s=0.2)
+    result = replayer.run(trajectory, speed_scale=1.0, realtime=False)
+    assert not result.aborted, result.reason
+    commands = np.asarray(robot.commands)
+    # 0.25 rad/s playback is 0.002 rad per tick; resuming after a settle used
+    # to leap 0.1 rad because the plan clock kept running during the pause.
+    assert np.max(np.abs(np.diff(commands, axis=0))) < 0.005
+    held = np.sum(np.all(np.abs(np.diff(commands, axis=0)) < 1e-12, axis=1))
+    assert held >= int(0.6 * 125) - 2
+    assert robot.state().q[0] == pytest.approx(0.5, abs=0.03)

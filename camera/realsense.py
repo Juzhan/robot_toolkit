@@ -27,9 +27,13 @@ def _import_realsense():
 
 class RealSenseCamera(ThreadedCamera):
     def __init__(self, name: str = 'camera', serial: str = '', width: int = 640,
-                 height: int = 480, fps: int = 30, depth: bool = False):
+                 height: int = 480, fps: int = 30, depth: bool = False,
+                 exposure_ms: float | None = None, gain: float | None = None):
         super().__init__(name, width, height, fps, depth)
         self.serial = str(serial)
+        # 手动曝光（毫秒）：短曝光可减少运动拖影；None = 自动曝光
+        self.exposure_ms = exposure_ms
+        self.gain = gain
         self._pipeline = None
         self._align = None
         self.depth_scale = 0.001
@@ -47,6 +51,7 @@ class RealSenseCamera(ThreadedCamera):
                                  rs.format.z16, int(self.fps))
         self._pipeline = rs.pipeline()
         profile = self._pipeline.start(config)
+        self._apply_color_options(rs, profile.get_device().first_color_sensor())
         if self.depth_enabled:
             self._align = rs.align(rs.stream.color)
             self.depth_scale = float(profile.get_device().first_depth_sensor().get_depth_scale())
@@ -59,6 +64,14 @@ class RealSenseCamera(ThreadedCamera):
         self._start_worker()
         self._opened = True
         return self
+
+    def _apply_color_options(self, rs, sensor):
+        if self.exposure_ms is not None:
+            sensor.set_option(rs.option.enable_auto_exposure, 0)
+            # UVC 彩色曝光单位为 100 µs
+            sensor.set_option(rs.option.exposure, float(np.clip(round(self.exposure_ms * 10), 1, 10000)))
+        if self.gain is not None:
+            sensor.set_option(rs.option.gain, float(self.gain))
 
     def _loop(self):  # pragma: no cover - requires hardware
         while not self._stop.is_set():

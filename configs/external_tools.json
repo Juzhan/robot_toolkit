@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "name": "sam3",
+      "capability": "text_prompted_segmentation",
+      "repository": "https://github.com/NVlabs/ENPIRE",
+      "revision": "99ee90acf65b5b18957c8382ad580db999528be3",
+      "service_path": "enpire/env/forge/tools/vision/serve_sam3.py",
+      "adapter": "enpire_sam3_http",
+      "notes": "External SAM3 weights and GPU runtime required; adapter contract pinned to this ENPIRE revision."
+    },
+    {
+      "name": "bundlesdf",
+      "capability": "rigid_object_reconstruction_and_pose_tracking",
+      "repository": "https://github.com/NVlabs/ENPIRE",
+      "revision": "99ee90acf65b5b18957c8382ad580db999528be3",
+      "service_path": "enpire/env/forge/tools/vision/serve_bundlesdf.py",
+      "adapter": "enpire_bundlesdf_http",
+      "notes": "Fixed-camera push/start/read/end client implemented. Requires external BundleSdf and bundlesdf.run_live_bundlesdf; model execution and mesh export unverified."
+    },
+    {
+      "name": "anygrasp",
+      "capability": "six_dof_grasp_proposals",
+      "repository": "https://github.com/NVlabs/ENPIRE",
+      "revision": "99ee90acf65b5b18957c8382ad580db999528be3",
+      "service_path": "enpire/env/forge/tools/vision/serve_anygrasp.py",
+      "adapter": "enpire_anygrasp_http",
+      "notes": "RGB-D/mask grasp candidate client implemented. External licensed SDK/checkpoint required; vendor grasp frame is not robot TCP. No motion execution."
+    },
+    {
+      "name": "curobo",
+      "capability": "collision_aware_motion_planning",
+      "repository": "https://github.com/NVlabs/curobo",
+      "revision": "v0.8.0",
+      "service_path": null,
+      "adapter": null,
+      "notes": "Inventory only. ENPIRE-referenced version; robot/tool geometry and collision scene must be configured and validated before use."
+    }
+  ]
+}

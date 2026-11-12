@@ -18,7 +18,7 @@ class SafeRobot(RobotBackend):
     """
 
     def __init__(self, inner: RobotBackend, guard: SafetyGuard, raise_on_limit: bool = True,
-                 workspace=None):
+                 workspace=None, collision=None):
         super().__init__(inner.spec, inner.capabilities)
         self.inner = inner
         self.guard = guard
@@ -27,6 +27,7 @@ class SafeRobot(RobotBackend):
         self.rejected_commands = 0
         self._connected = inner.connected
         self.workspace = workspace
+        self.collision = collision    # core.collision.CollisionGuard: links vs obstacles
 
     # ------------------------------------------------------------------ link
     def connect(self):
@@ -76,6 +77,8 @@ class SafeRobot(RobotBackend):
             'max_step_rad': self.guard.max_step_rad,
             'velocity_semantics': 'generic_servo_target_to_feedback_lead',
             'workspace_guard': self.workspace is not None,
+            'collision_guard': self.collision is not None,
+            # Padded link spheres vs configured obstacles; no self-collision check.
             'full_collision_check': False,
         }
         return description
@@ -83,9 +86,13 @@ class SafeRobot(RobotBackend):
     def forward_kinematics(self, joints):
         return self.inner.forward_kinematics(joints)
 
+    @property
+    def _path_guards(self):
+        return [guard for guard in (self.workspace, self.collision) if guard is not None]
+
     def check_workspace_path(self, current, target):
-        if self.workspace is not None:
-            self.workspace.check_path(current, target)
+        for guard in self._path_guards:
+            guard.check_path(current, target)
 
     def init_period(self):
         return self.inner.init_period()
@@ -105,10 +112,11 @@ class SafeRobot(RobotBackend):
         if not decision.accepted and self.raise_on_limit:
             self.rejected_commands += 1
             raise SafetyViolation(decision.reason or 'command rejected by safety guard')
-        if self.workspace is not None:
+        if self._path_guards:
             try:
-                self.workspace.check_feedback(state)
-                self.workspace.check_path(current, decision.target)
+                for guard in self._path_guards:
+                    guard.check_feedback(state)
+                    guard.check_path(current, decision.target)
             except Exception:
                 self.inner.stop_motion()
                 raise
@@ -116,7 +124,7 @@ class SafeRobot(RobotBackend):
 
     def servo_l(self, pose, dt: float) -> bool:
         """Cartesian servo delegates: the backend runs IK, so validate afterwards."""
-        if self.workspace is not None:
+        if self._path_guards:
             raise SafetyViolation('workspace guarded Cartesian motion needs a validated IK path')
         before = self.inner.state().q
         ok = self.inner.servo_l(pose, dt)
@@ -134,10 +142,11 @@ class SafeRobot(RobotBackend):
         target = np.asarray(joints, dtype=float)
         if self.guard.limits.violates(target):
             raise SafetyViolation('target violates hardware joint limits')
-        if self.workspace is not None:
+        if self._path_guards:
             state = self.inner.state()
-            self.workspace.check_feedback(state)
-            self.workspace.check_path(state.q, target)
+            for guard in self._path_guards:
+                guard.check_feedback(state)
+                guard.check_path(state.q, target)
         return target
 
     def _has_native_move_j(self) -> bool:
@@ -156,7 +165,7 @@ class SafeRobot(RobotBackend):
         return RobotBackend.move_j(self, target, **kwargs)
 
     def move_l(self, pose, *args, **kwargs) -> bool:
-        if self.workspace is not None:
+        if self._path_guards:
             raise SafetyViolation('workspace guarded Cartesian motion needs a validated IK path')
         return self.inner.move_l(pose, *args, **kwargs)
 
@@ -173,7 +182,7 @@ class SafeRobot(RobotBackend):
     def move_p(self, pose, wait: bool = True, timeout: float | None = None,
                use_native: bool = True, speed: float | None = None,
                accel: float | None = None) -> bool:
-        if self.workspace is not None:
+        if self._path_guards:
             raise SafetyViolation('workspace guarded Cartesian motion needs a validated IK path')
         # Prefer a native P mover (Piper).  If it is unavailable (for example
         # the Piper mock has no Cartesian model), fall back to host IK.

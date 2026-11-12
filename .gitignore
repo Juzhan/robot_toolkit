@@ -12,3 +12,7 @@ dist/
 Thumbs.db
 # local interpreter pointer for run.bat (machine-specific path)
 .robot_toolkit_python
+/external-runtime/
+/tool-runtimes/
+/model-weights/
+/external-tools.local.json

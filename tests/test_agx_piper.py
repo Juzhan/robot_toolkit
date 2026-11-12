@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import types
 
 import numpy as np
 import pytest
 
+from robot_toolkit import RobotPlatform, with_reports
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.core.mathutils import euler_to_matrix, rotvec_to_matrix
 from robot_toolkit.core.safety import JointLimits, SafetyGuard
@@ -242,11 +244,75 @@ def test_safe_robot_uses_native_joint_planner(monkeypatch):
         assert len(arm.commands) == before + 1
         assert arm.commands[-1] == pytest.approx([0.2] * 6)
         assert arm.speed == 20
-        result = safe.move_j_result([0.1] * 6, speed=0.2, timeout=1.0)
+        def unexpected_wait(*args, **kwargs):
+            pytest.fail('platform must monitor without the backend wait loop')
+        monkeypatch.setattr(robot, 'wait_until_settled', unexpected_wait)
+        result = with_reports(RobotPlatform(safe)).move_j([0.1] * 6, speed=0.2, timeout=1.0)
         assert result['ok'] and result['reason'] == 'reached'
         assert result['joint_error_rad'] == pytest.approx(0.0)
+        assert result['monitoring']['mode'] == 'platform'
+        assert len(arm.commands) == before + 2
     finally:
         safe.disconnect()
+
+
+def test_platform_monitors_native_pose_with_fake_sdk(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(firmware='default', ik_backend='none'))
+    robot.connect()
+
+    def unexpected_wait(*args, **kwargs):
+        pytest.fail('platform must not use the backend Cartesian wait')
+
+    monkeypatch.setattr(robot, '_wait_cartesian', unexpected_wait)
+    safe = SafeRobot(robot, SafetyGuard(JointLimits([-3.0] * 6, [3.0] * 6, 1.0)))
+    try:
+        result = RobotPlatform(safe).move_p(
+            robot.state().tcp, abort_event=threading.Event(), timeout=1)
+        assert result.ok and result.details['monitoring']['mode'] == 'platform'
+        assert len(arm.pose_commands) == 1 and arm.motion_mode == 'p'
+    finally:
+        robot.disconnect()
+
+
+def test_read_only_upgrade_prepares_joint_stream_without_a_pose_command(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(firmware='default', ik_warmup=False,
+                                       speed_percent=20, command_hz=0))
+    robot.connect_read_only()
+    try:
+        assert not arm.enabled
+        assert arm.speed is None
+        assert arm.motion_mode_calls == 0
+        assert arm.commands == []
+        assert robot.prepare_motion()
+        assert arm.enabled
+        assert arm.speed == 20
+        assert arm.auto_motion_mode is False
+        assert arm.motion_mode == 'j'
+        assert arm.motion_mode_calls == 1
+        assert arm.commands == []
+        for _ in range(3):
+            assert robot.servo_j(arm.q, .01)
+        assert len(arm.commands) == 3
+        assert arm.motion_mode_calls == 1
+    finally:
+        robot.disconnect()
+
+
+@pytest.mark.parametrize('joints', [None, [float('nan')] * 6,
+                                   [float('inf')] * 6, [0.] * 5])
+def test_stop_hold_requires_valid_joint_feedback(monkeypatch, joints):
+    robot = AgxPiperRobot(AgxPiperConfig(firmware='default', ik_warmup=False))
+    arm = _FakeArm()
+    robot._robot = arm
+    monkeypatch.setattr(robot, 'state', lambda: types.SimpleNamespace(q=joints))
+    assert robot.stop_motion() is False
+    assert arm.commands == []
 
 
 def test_missing_arm_status_remains_unknown(monkeypatch):
@@ -500,3 +566,57 @@ def test_set_linkage_follower_and_bad_role(monkeypatch):
     assert bus.sent[0].data == bytes([0xFC, 0, 0, 0, 0, 0, 0, 0])
     with pytest.raises(ValueError):
         set_piper_linkage('master', interface='agx_cando', channel='0')
+
+
+@pytest.mark.parametrize('installed, expected', [
+    ({'robokit.helpers.ik'}, 'RobokitIK'),
+    (set(), None),
+])
+def test_auto_ik_prefers_robokit(monkeypatch, installed, expected):
+    import importlib.util
+
+    from robot_toolkit.robot import agx_piper
+
+    real = importlib.util.find_spec
+    monkeypatch.setattr(agx_piper.importlib.util, 'find_spec',
+                        lambda name, *a: object() if name in installed
+                        else (None if name == 'robokit.helpers.ik' else real(name, *a)))
+    robot = AgxPiperRobot(AgxPiperConfig(firmware='default'), mock=True)
+    solver = robot._ik_solver
+    assert (None if solver is None else type(solver).__name__) == expected
+
+
+def test_required_ik_backend_must_be_installed(monkeypatch):
+    from robot_toolkit.errors import ConfigurationError
+    from robot_toolkit.robot import agx_piper
+
+    monkeypatch.setattr(agx_piper.importlib.util, 'find_spec', lambda name, *a: None)
+    with pytest.raises(ConfigurationError):
+        AgxPiperRobot(AgxPiperConfig(firmware='default', ik_backend='robokit'), mock=True)
+
+
+def test_robokit_ik_round_trip():
+    """Real solver when robokit is installed: FK(q) -> IK -> same link6 pose."""
+    pytest.importorskip('robokit.helpers.ik')
+    yourdfpy = pytest.importorskip('yourdfpy')
+    from pathlib import Path
+
+    from robot_toolkit.core.mathutils import matrix_to_rotvec
+    from robot_toolkit.robot import RobokitIK
+
+    urdf = Path(__file__).resolve().parents[1] / 'assets/piperx_assets/assets/piper_x.urdf'
+    joints = [f'joint{i}' for i in range(1, 7)]
+    ik = RobokitIK(urdf, target_link_name='link6', joint_names=joints)
+    model = yourdfpy.URDF.load(str(urdf))
+    q_true = [0.4, 1.3, -1.2, 0.3, 0.6, -0.5]
+    model.update_cfg(dict(zip(joints, q_true)))
+    T = model.get_transform('link6', 'base_link')
+    pose = np.concatenate([T[:3, 3], matrix_to_rotvec(T[:3, :3])])
+    q = ik.solve(pose, seed=[0.0, 1.0, -1.0, 0.0, 0.5, 0.0])
+    assert len(q) == 6
+    model.update_cfg(dict(zip(joints, q)))
+    F = model.get_transform('link6', 'base_link')
+    assert np.linalg.norm(F[:3, 3] - T[:3, 3]) < 0.005
+    unreachable = pose.copy()
+    unreachable[:3] = [2.0, 0.0, 0.5]
+    assert len(ik.solve(unreachable)) == 0

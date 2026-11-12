@@ -74,14 +74,13 @@ class AgxPiperConfig:
     # reaches both arms and can drop them out of teach mode.
     configure_on_connect: bool = True
     has_gripper: bool = True
-    # Host-side IK. 'auto' attaches PyRoki when it is installed and the
-    # bundled Piper URDF exists; 'none' disables it; 'pyroki' requires it.
+    # Host-side IK. 'auto' attaches robokit when it is installed and the
+    # bundled Piper URDF exists; 'none' disables it; 'robokit' requires it.
     ik_backend: str = 'auto'
     ik_urdf: str = ''
     ik_target_link: str = 'link6'
     ik_joint_names: list = field(default_factory=lambda: [
         'joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6'])
-    ik_self_collision: bool = False
     # Compile the host IK once at connect instead of on the first move_p.
     ik_warmup: bool = True
     gripper_force_n: float = 1.0
@@ -113,7 +112,11 @@ class AgxPiperRobot(RobotBackend):
                                             servo_l=False, move_j=True,
                                             move_l=True, move_p=True, freedrive=True,
                                             gripper=bool(self.config.has_gripper),
-                                            protective_stop_report=True))
+                                            protective_stop_report=True,
+                                            servo_j_kind='simulation' if self.mock else 'planned_position',
+                                            servo_j_timing='simulation_step' if self.mock else 'host_scheduled',
+                                            stop_motion_kind='no_op' if self.mock else 'measured_position_hold',
+                                            nonblocking_moves=() if self.mock else ('move_j', 'move_p')))
         self._sdk = None
         self._robot = None
         self._effector = None
@@ -138,36 +141,37 @@ class AgxPiperRobot(RobotBackend):
             self._attach_default_ik()
 
     def _attach_default_ik(self):
-        """Attach the bundled PyRoki IK unless it is unavailable."""
+        """Attach the bundled robokit host IK unless unavailable."""
         backend = str(self.config.ik_backend or 'auto').lower()
-        if backend not in ('auto', 'pyroki', 'none'):
+        if backend not in ('auto', 'robokit', 'none'):
             raise ConfigurationError(
-                f"ik_backend must be 'auto', 'pyroki' or 'none', got {backend!r}")
+                f"ik_backend must be 'auto', 'robokit' or 'none', got {backend!r}")
         if backend == 'none':
             return
+        # A bare `robokit` source checkout in the cwd is a namespace package
+        # that find_spec('robokit') reports as present; probe the solver.
         try:
-            available = importlib.util.find_spec('pyroki') is not None
+            installed = importlib.util.find_spec('robokit.helpers.ik') is not None
         except Exception:
-            available = False
-        if not available:
-            if backend == 'pyroki':
+            installed = False
+        required = backend == 'robokit'
+        if not installed:
+            if required:
                 raise ConfigurationError(
-                    'ik_backend="pyroki" but PyRoki is not installed; '
-                    'install it with `pip install -e .[ik]`')
+                    'ik_backend="robokit" but robokit is not installed; see robot/ik.py')
             return
         urdf = self.config.ik_urdf or str(
             Path(__file__).resolve().parent.parent
             / 'assets' / 'piperx_assets' / 'assets' / 'piper_x.urdf')
         if not Path(urdf).exists():
-            if backend == 'pyroki' or self.config.ik_urdf:
+            if required or self.config.ik_urdf:
                 raise ConfigurationError(f'IK URDF not found: {urdf}')
             return
-        from .ik import PyrokiIK
-        self.set_inverse_kinematics(PyrokiIK(
+        from .ik import RobokitIK
+        self.set_inverse_kinematics(RobokitIK(
             urdf,
             target_link_name=self.config.ik_target_link,
             joint_names=self.config.ik_joint_names,
-            self_collision=bool(self.config.ik_self_collision),
         ))
 
     def _warmup_ik(self):
@@ -287,7 +291,28 @@ class AgxPiperRobot(RobotBackend):
 
     def prepare_motion(self):
         super().prepare_motion()
-        return self.enable()
+        if not self.enable():
+            return False
+        self.set_speed_percent(self.config.speed_percent)
+        self._prepare_joint_mode()
+        return True
+
+    def _prepare_joint_mode(self):
+        """Use one J-mode setup for normal and read-only-upgrade connections."""
+        if self.mock:
+            return
+        try:
+            self._robot.set_auto_set_motion_mode_enabled(False)
+            self._robot.set_motion_mode('j')
+            self._auto_motion_mode = False
+            self._motion_mode = 'j'
+        except Exception:
+            self._auto_motion_mode = True
+            self._motion_mode = ''
+            try:
+                self._robot.set_auto_set_motion_mode_enabled(True)
+            except Exception:
+                pass
 
     def connect(self):
         if self.mock:
@@ -350,18 +375,7 @@ class AgxPiperRobot(RobotBackend):
                 # ``move_j`` otherwise sends the motion-mode command on every
                 # 50 Hz replay frame, which adds latency and makes Piper playback
                 # visibly stutter.  Disable auto switching and set J mode once.
-                try:
-                    self._robot.set_auto_set_motion_mode_enabled(False)
-                    self._robot.set_motion_mode('j')
-                    self._auto_motion_mode = False
-                    self._motion_mode = 'j'
-                except Exception:
-                    self._auto_motion_mode = True
-                    self._motion_mode = ''
-                    try:
-                        self._robot.set_auto_set_motion_mode_enabled(True)
-                    except Exception:
-                        pass
+                self._prepare_joint_mode()
             self._connected = True
             if self.config.configure_on_connect and self.config.ik_warmup:
                 self._warmup_ik()
@@ -761,15 +775,23 @@ class AgxPiperRobot(RobotBackend):
         return self._wait_cartesian(timeout or 60.0)
 
     def stop_motion(self, deceleration: float = 2.0) -> bool:
+        """Submit a measured-position hold, not a verified stop or emergency stop.
+
+        ``deceleration`` is not implemented by this position-target transport.
+        """
         if self.mock:
             return True
         if self._robot is None:
             return False
         try:
             state = self.state()
-            if state.q is not None:
-                self._ensure_motion_mode('j')
-                self._robot.move_j([float(value) for value in state.q])
+            if state.q is None:
+                return False
+            target = np.asarray(state.q, dtype=float)
+            if target.shape != (self.spec.dof,) or not np.isfinite(target).all():
+                return False
+            self._ensure_motion_mode('j')
+            self._robot.move_j(target.tolist())
             return True
         except Exception:
             return False

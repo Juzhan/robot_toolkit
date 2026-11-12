@@ -10,13 +10,19 @@ import numpy as np
 import pytest
 
 from robot_toolkit.camera import MockCamera
+from robot_toolkit.camera.base import ThreadedCamera
+from robot_toolkit.camera import CameraHub
+from robot_toolkit.collect.observation import RobotCameraSynchronizer
 from robot_toolkit.collect import (CameraSpec, DatasetSchema, EpisodeCollector,
                                    EpisodeRecorder, collect_trajectory,
                                    export_lerobot, export_manifest,
                                    split_camera_frames)
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.errors import DatasetError
+from robot_toolkit.errors import RobotUnavailable
 from robot_toolkit.robot import MockRobot
+from robot_toolkit.robot.base import RobotState
+from robot_toolkit.profiles import build_robot
 from robot_toolkit.teach import Trajectory
 
 
@@ -29,6 +35,245 @@ def _schema(fps=10):
 
 def _image():
     return np.zeros((24, 32, 3), dtype=np.uint8)
+
+
+def test_camera_read_copies_outside_lock_without_mixing_frames():
+    camera = ThreadedCamera('wrist')
+    next_rgb = np.full((3, 4, 3), 2, dtype=np.uint8)
+    next_depth = np.full((3, 4), 200, dtype=np.uint16)
+
+    class PublishingArray(np.ndarray):
+        def copy(self, order='C'):
+            assert camera._lock.acquire(blocking=False), 'image copy blocks the publisher'
+            camera._lock.release()
+            camera._publish(next_rgb, next_depth, {'frame_number': 2}, {'frame_number': 2})
+            return super().copy(order=order)
+
+    rgb = np.ones((3, 4, 3), dtype=np.uint8).view(PublishingArray)
+    depth = np.full((3, 4), 100, dtype=np.uint16)
+    camera._publish(rgb, depth, {'frame_number': 1}, {'frame_number': 1})
+    stamp = camera._stamp
+    first = camera.read()
+    second = camera.read()
+    assert first.t == stamp
+    assert np.all(first.rgb == 1) and np.all(first.depth == 100)
+    assert first.meta['color']['frame_number'] == first.meta['depth']['frame_number'] == 1
+    assert np.all(second.rgb == 2) and np.all(second.depth == 200)
+    assert second.meta['color']['frame_number'] == second.meta['depth']['frame_number'] == 2
+    first.rgb.fill(9)
+    first.depth.fill(999)
+    second.rgb.fill(8)
+    second.depth.fill(888)
+    assert np.all(rgb == 1) and np.all(depth == 100)
+    assert np.all(next_rgb == 2) and np.all(next_depth == 200)
+
+
+def test_camera_read_before_first_frame_remains_empty():
+    frame = ThreadedCamera('empty').read()
+    assert frame.rgb is None and frame.depth is None and frame.t == 0.0
+
+
+def test_synchronizer_pairs_host_history_not_robot_sdk_time():
+    camera = ThreadedCamera('wrist')
+    camera._publish(_image())
+    camera._stamp = 10.01
+    robot = MockRobot(RobotSpec.generic(1))
+    times = iter([10.1, 10.101, 10.102, 10.103, 10.104])
+    sync = RobotCameraSynchronizer(robot, CameraHub([camera]), clock=lambda: next(times))
+    sample = RobotState(t=900000.0, q=[0.3], timestamp_clock='controller')
+    sync.add_state(sample, started_at=10.0, finished_at=10.002)
+    sample.q[0] = 99
+    result = sync.observe()
+    evidence = result['synchronization']
+    assert evidence['matched'] and not evidence['exposure_synchronized']
+    assert result['state'].q == pytest.approx([0.3])
+    pair = evidence['cameras']['wrist']
+    assert pair['state']['t'] == 900000.0
+    assert pair['state_minus_frame_s'] == pytest.approx(-0.009)
+    assert pair['read_window_skew_bound_s'] == pytest.approx(0.01)
+    assert robot.commands == []
+    json.dumps(evidence, allow_nan=False)
+
+
+@pytest.mark.parametrize('frame_time, expected', [
+    (9.0, 'stale_image'), (9.9, 'skew_exceeded'),
+    (11.0, 'invalid_frame_time'), (float('nan'), 'invalid_frame_time')])
+def test_synchronizer_rejects_unmatched_images(frame_time, expected):
+    camera = ThreadedCamera('wrist')
+    camera._publish(_image())
+    camera._stamp = frame_time
+    robot = MockRobot(RobotSpec.generic(1))
+    sync = RobotCameraSynchronizer(robot, CameraHub([camera]), clock=lambda: 10.0)
+    result = sync.observe(strict=False)
+    assert not result['synchronization']['matched']
+    assert result['state'] is None
+    assert result['synchronization']['cameras']['wrist']['reason'] == expected
+    json.dumps(result['synchronization'], allow_nan=False)
+    with pytest.raises(RobotUnavailable, match=expected):
+        sync.observe()
+    assert robot.commands == []
+
+
+def test_synchronizer_rejects_slow_reads_even_when_midpoint_matches():
+    camera = ThreadedCamera('wrist')
+    camera._publish(_image())
+    camera._stamp = 10.1
+    times = iter([10.0, 10.2, 10.201, 10.202, 10.203])
+    sync = RobotCameraSynchronizer(MockRobot(RobotSpec.generic(1)), CameraHub([camera]),
+                                   clock=lambda: next(times))
+    pair = sync.observe(strict=False)['synchronization']['cameras']['wrist']
+    assert pair['state_minus_frame_s'] == pytest.approx(0.0)
+    assert pair['read_window_skew_bound_s'] == pytest.approx(0.1)
+    assert not pair['matched']
+
+
+def test_synchronizer_bounds_history_and_rejects_bad_feedback():
+    sync = RobotCameraSynchronizer(MockRobot(RobotSpec.generic(1)),
+                                   CameraHub([ThreadedCamera('wrist')]), max_samples=2, history_s=1)
+    for stamp in (1.0, 1.1, 1.2):
+        sync.add_state(RobotState(q=[stamp]), started_at=stamp, finished_at=stamp)
+    assert len(sync._history) == 2
+    sync.add_state(RobotState(q=[3]), started_at=3.0, finished_at=3.0)
+    assert len(sync._history) == 1
+    with pytest.raises(ValueError, match='ordered'):
+        sync.add_state(RobotState(q=[0]), started_at=2.0, finished_at=2.0)
+    with pytest.raises(RobotUnavailable):
+        sync.add_state(RobotState(q=[np.nan]), started_at=4.0, finished_at=4.0)
+    assert len(sync._history) == 0
+
+
+def test_synchronizer_preserves_each_cameras_matched_state():
+    wrist, external = ThreadedCamera('wrist'), ThreadedCamera('external')
+    wrist._publish(_image())
+    external._publish(_image())
+    wrist._stamp, external._stamp = 10.0, 10.1
+    sync = RobotCameraSynchronizer(MockRobot(RobotSpec.generic(1)),
+                                   CameraHub([wrist, external]), clock=lambda: 10.2)
+    sync.add_state(RobotState(q=[0.1]), started_at=10.0, finished_at=10.001)
+    sync.add_state(RobotState(q=[0.2]), started_at=10.1, finished_at=10.101)
+    result = sync.observe()
+    evidence = result['synchronization']
+    assert evidence['reference_camera'] == 'wrist'
+    assert evidence['camera_received_span_s'] == pytest.approx(0.1)
+    assert result['state'].q == pytest.approx([0.1])
+    assert evidence['cameras']['external']['state']['q'] == [0.2]
+    assert evidence['matched'] and not evidence['exposure_synchronized']
+
+
+@pytest.mark.parametrize('kind', ['mock', 'piper_x', 'ur_rtde'])
+def test_synchronizer_supports_uniform_robot_backends(kind):
+    robot = build_robot(kind, mock=True).connect()
+    camera = MockCamera('wrist', 32, 24).open()
+    before = robot.state().q.copy()
+    try:
+        result = RobotCameraSynchronizer(robot, CameraHub([camera])).observe()
+        assert result['synchronization']['matched']
+        assert result['state'].q == pytest.approx(before)
+        assert robot.state().q == pytest.approx(before)
+    finally:
+        camera.close()
+        robot.disconnect()
+
+
+def test_synchronizer_refuses_disconnected_robot_without_reconnecting():
+    robot = MockRobot(RobotSpec.generic(1))
+    sync = RobotCameraSynchronizer(robot, CameraHub([ThreadedCamera('wrist')]))
+    sync.add_state(robot.state(), started_at=1.0, finished_at=1.0)
+    robot.disconnect()
+    with pytest.raises(RobotUnavailable, match='disconnected'):
+        sync.observe()
+    assert not robot.connected and not sync._history
+    assert robot.commands == []
+
+
+def test_synchronizer_missing_camera_and_constructor_validation():
+    robot = MockRobot(RobotSpec.generic(1))
+    hub = CameraHub([ThreadedCamera('wrist')])
+    sync = RobotCameraSynchronizer(robot, hub)
+    with pytest.raises(RobotUnavailable, match='missing_image'):
+        sync.observe()
+    for options in ({'max_skew_s': 0}, {'max_frame_age_s': float('nan')},
+                    {'history_s': -1}, {'max_samples': 1}):
+        with pytest.raises(ValueError):
+            RobotCameraSynchronizer(robot, hub, **options)
+    with pytest.raises(ValueError, match='camera'):
+        RobotCameraSynchronizer(robot, CameraHub())
+
+
+def test_synchronized_collector_persists_pairs_without_double_camera_read(tmp_path):
+    robot = MockRobot(RobotSpec.generic(1, with_gripper=False))
+    camera = MockCamera('wrist', 32, 24)
+    schema = DatasetSchema.for_robot(robot.spec, cameras=[camera])
+    collector = EpisodeCollector(tmp_path, schema, robot=robot, cameras=[camera],
+                                 export=export_manifest, synchronize=True)
+    take = collector.start('synchronized observation')
+    try:
+        initial_frames = camera.frames_seen
+        assert collector.capture_state(extra={'source_index': [7]})
+        assert collector.capture_state(action=[0.2])
+        assert camera.frames_seen == initial_frames + 2
+        collector.stop(success=True)
+    finally:
+        collector.close()
+    frames = sorted(take.glob('[0-9]*.npz'))
+    assert len(frames) == 2
+    with np.load(frames[0], allow_pickle=False) as saved:
+        evidence = json.loads(saved['synchronization_json'].item())
+        assert evidence['matched'] and not evidence['exposure_synchronized']
+        pair = evidence['cameras']['wrist']
+        assert pair['frame_metadata']['frame_number'] == initial_frames + 1
+        assert saved['observation_state'] == pytest.approx(pair['state']['q'])
+        assert evidence['action_alignment'] == 'reference_state_copy'
+        assert saved['source_index'].tolist() == [7]
+        assert saved['wrist_rgb'].shape == (24, 32, 3)
+    with np.load(frames[1], allow_pickle=False) as saved:
+        evidence = json.loads(saved['synchronization_json'].item())
+        assert evidence['action_alignment'] == 'caller_supplied_not_time_aligned'
+        assert saved['action'] == pytest.approx([0.2])
+    assert robot.commands == []
+
+
+def test_synchronized_collector_rejects_untimed_and_stale_inputs(tmp_path):
+    robot = MockRobot(RobotSpec.generic(1, with_gripper=False))
+    camera = MockCamera('wrist', 32, 24)
+    collector = EpisodeCollector(tmp_path, DatasetSchema.for_robot(robot.spec, cameras=[camera]),
+                                 robot=robot, cameras=[camera], synchronize=True)
+    collector.start('rejections')
+    try:
+        with pytest.raises(DatasetError, match='untimed'):
+            collector.capture_state(state=robot.state())
+        with pytest.raises(DatasetError, match='bare vectors'):
+            collector.capture_vectors([0], [0])
+        with pytest.raises(DatasetError, match='reserved'):
+            collector.capture_state(extra={'synchronization_json': 'forged'})
+        collector.synchronizer.clock = lambda: 1e15
+        with pytest.raises(DatasetError, match='stale_image'):
+            collector.capture_state(strict_cameras=False)
+        assert collector.recorder.frames == 0
+    finally:
+        collector.discard()
+        collector.close()
+
+
+def test_synchronized_collector_does_not_substitute_live_gripper(tmp_path, monkeypatch):
+    robot = MockRobot(RobotSpec.generic(1))
+    camera = MockCamera('wrist', 32, 24)
+    class UntimedGripper:
+        @property
+        def width(self):
+            raise AssertionError('must not read a live gripper for an old image')
+    monkeypatch.setattr(robot, 'state', lambda: RobotState(q=[0], extra={}))
+    collector = EpisodeCollector(tmp_path, DatasetSchema.for_robot(robot.spec, cameras=[camera]),
+                                 robot=robot, gripper=UntimedGripper(), cameras=[camera],
+                                 synchronize=True)
+    collector.start('missing matched gripper')
+    try:
+        with pytest.raises(DatasetError, match='gripper width'):
+            collector.capture_state()
+        assert collector.recorder.frames == 0
+    finally:
+        collector.discard()
+        collector.close()
 
 
 def test_schema_features_match_contract():

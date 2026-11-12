@@ -4,20 +4,28 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 from robot_toolkit.control import (ContinuousConfig, SequenceSource,
                                    run_continuous_stream)
+from robot_toolkit.control import stream as servo_module
 from robot_toolkit.core.continuous import ContinuousReference
+from robot_toolkit.core import continuous as reference_module
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.gripper import MockGripper
 from robot_toolkit.robot import MockRobot
 
 
-def test_fallback_reference_respects_kinematic_limits():
+requires_ruckig = pytest.mark.skipif(reference_module.Ruckig is None,
+                                     reason='Ruckig is not installed')
+
+
+@requires_ruckig
+def test_reference_respects_kinematic_limits():
     dt = 0.008
     reference = ContinuousReference(
         [0.0] * 6, dt, speed=0.8, acceleration=1.2, jerk=8.0,
-        lower=[-6.28] * 6, upper=[6.28] * 6, backend='fallback')
+        lower=[-6.28] * 6, upper=[6.28] * 6)
     rng = np.random.default_rng(4)
     target = np.zeros(6)
     positions, velocities, accelerations = [], [], []
@@ -36,12 +44,35 @@ def test_fallback_reference_respects_kinematic_limits():
     assert np.max(np.abs(np.diff(positions, axis=0) / dt)) <= 0.8 + 1e-6
 
 
+@requires_ruckig
 def test_reference_rejects_bad_targets():
     reference = ContinuousReference([0.0] * 6, 0.008, 0.8, 1.2, 8.0,
-                                    [-1.0] * 6, [1.0] * 6, backend='fallback')
+                                    [-1.0] * 6, [1.0] * 6)
     for target in ([float('nan')] * 6, [float('inf')] * 6, [1.1] * 6):
         with pytest.raises(ValueError):
             reference.step(target)
+
+
+@pytest.mark.parametrize('backend', ['auto', 'ruckig'])
+def test_missing_ruckig_is_an_error(monkeypatch, backend):
+    monkeypatch.setattr(reference_module, 'Ruckig', None)
+    with pytest.raises(ImportError, match='Ruckig'):
+        ContinuousReference([0.] * 6, backend=backend)
+
+
+@requires_ruckig
+def test_ruckig_settles_and_retargets_without_a_limit_cycle():
+    reference = ContinuousReference([0.] * 6, dt=.01, speed=.8,
+                                    acceleration=2., jerk=10., backend='ruckig')
+    for target in (.05, .12, -.04):
+        tail = []
+        for index in range(500):
+            position = reference.step([target] * 6)
+            if index >= 400:
+                tail.append(position)
+        np.testing.assert_allclose(tail, target, atol=1e-8)
+        np.testing.assert_allclose(reference.v, 0., atol=1e-8)
+        np.testing.assert_allclose(reference.a, 0., atol=1e-8)
 
 
 def _actions():
@@ -51,6 +82,27 @@ def _actions():
     actions[:5, 6] = 0.085
     actions[5:, 6] = 0.0
     return actions
+
+
+@pytest.mark.parametrize('problem', ['missing_ruckig', 'fallback', 'invalid_limit'])
+def test_hardware_reference_preflight_precedes_all_commands(monkeypatch, problem):
+    calls = []
+    sample = MockRobot(RobotSpec.generic(6)).state()
+    robot = SimpleNamespace(state=lambda: sample, joints_within_safety=lambda joints: True,
+                            stop_motion=lambda *unused: calls.append('stop'))
+    monkeypatch.setattr(servo_module, 'ensure_servo',
+                        lambda *unused, **kwargs: calls.append('ensure_servo') or True)
+    config = ContinuousConfig()
+    if problem == 'missing_ruckig':
+        monkeypatch.setattr(reference_module, 'Ruckig', None)
+    elif problem == 'fallback':
+        config.reference_backend = 'fallback'
+    else:
+        config.max_joint_speed = -1.
+    with pytest.raises((ValueError, ImportError)):
+        run_continuous_stream(robot, None, SequenceSource(_actions()), config,
+                              on_start=lambda info: pytest.fail('invalid preflight passed'))
+    assert calls == []
 
 
 def test_stream_interpolates_chunks_and_gates_gripper():

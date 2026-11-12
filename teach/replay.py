@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from ..core.continuous import ContinuousReference
-from ..errors import Aborted, SafetyViolation
+from ..control.stream import ServoStream, StreamAbort
+from ..errors import Aborted, RobotUnavailable, SafetyViolation
 from ..robot.base import RobotBackend
 from .trajectory import (GripperSchedule, Trajectory, build_events, max_joint_speed,
                          resample, smooth_joints)
@@ -173,51 +173,39 @@ class Replayer:
                 self.max_joint_jerk, lower, upper)
             result.reference_backend = reference.backend
 
-        # The RTDE control script can time out while waiting at a prompt; make
-        # sure servo mode is alive immediately before the stream starts.
-        if not getattr(self.robot, 'mock', False):
-            from ..control.continuous import ensure_servo
-            if not ensure_servo(self.robot, dt, realtime=bool(realtime)):
-                result.aborted = True
-                result.reason = 'servo channel unavailable'
-                return result
+        # The RTDE control script can time out while waiting at a prompt; the
+        # stream re-checks servo mode immediately before the first command.
+        stream = ServoStream(self.robot, dt, realtime=realtime,
+                             use_sdk_period=self.use_sdk_period)
+        try:
+            commanded = np.asarray(stream.preflight().q, dtype=float)
+            stream.start()
+        except RobotUnavailable as exc:
+            result.aborted = True
+            result.reason = f'servo channel unavailable: {exc}'
+            return result
 
-        sdk_period = None
-        if (realtime and self.use_sdk_period
-                and not getattr(self.robot, 'mock', False)):
-            frequency = float(getattr(getattr(self.robot, 'config', None),
-                                      'frequency', 0.0) or 0.0)
-            init_period = getattr(self.robot, 'init_period', None)
-            if callable(init_period) and (frequency <= 0 or abs(frequency - plan.rate) < 1.0):
-                try:
-                    sdk_period = init_period()
-                except Exception:
-                    sdk_period = None
-
-        frozen_q = None
+        # Plan time only advances while the arm follows the plan: a gripper
+        # settle or hold pauses it, so playback resumes where it stopped
+        # instead of jumping ahead by the pause.
+        plan_t = 0.0
         freeze_until = -1.0
         capture_period = 1.0 / self.capture_fps if self.capture_fps > 0 else 0.0
         next_capture = 0.0
-        overruns: list[float] = []
-        tick = 0
-        started = time.perf_counter()
         try:
             while True:
-                tick_start = time.perf_counter()
+                now = stream.begin()
                 if abort_event is not None and abort_event.is_set():
                     result.aborted = True
                     result.reason = 'operator abort'
                     break
-                t = (tick + 1) * dt
-                if t > total + dt:
-                    break
-                index = min(int(round((t - t_full[0]) * plan.rate)), len(q_full) - 1)
+                _, measured, _ = stream.measure(commanded)
+                if now >= freeze_until:
+                    plan_t += dt
+                    if plan_t > total + dt:
+                        break
+                index = min(int(round((plan_t - t_full[0]) * plan.rate)), len(q_full) - 1)
                 q_command = q_full[max(index, 0)]
-
-                if frozen_q is not None and t < freeze_until:
-                    q_command = frozen_q
-                elif frozen_q is not None:
-                    frozen_q = None
 
                 if reference is not None:
                     try:
@@ -228,22 +216,14 @@ class Replayer:
                         break
 
                 try:
-                    sent = self.robot.servo_j(q_command, dt)
+                    stream.send(q_command)
                 except SafetyViolation as exc:
                     result.aborted = True
                     result.reason = f'safety rejection: {exc}'
                     break
-                if not sent:
-                    result.aborted = True
-                    result.reason = 'servo_j failed (robot may have left servo mode)'
-                    break
+                commanded = np.asarray(q_command, dtype=float)
 
-                if tick % 25 == 0 and self.robot.protective_stop():
-                    result.aborted = True
-                    result.reason = 'protective stop'
-                    break
-
-                while pending and pending[0]['t'] <= t:
+                while pending and pending[0]['t'] <= plan_t:
                     event = pending.pop(0)
                     result.events.append(dict(t=event['t'], action=event['action'],
                                               width=event['width'], label=event['label']))
@@ -252,44 +232,43 @@ class Replayer:
                     if event['action'] == 'hold':
                         if hold_callback is not None:
                             hold_callback(event)
+                            stream.resync()
                         else:
-                            frozen_q, freeze_until = q_command, t + 0.5
+                            freeze_until = now + 0.5
                     elif not self.gripper_free and event['action'] in ('close', 'open', 'move'):
                         self._fire(event['action'], event['width'])
                         settle = (self.close_settle_s if event['action'] == 'close'
                                   else self.open_settle_s)
                         if settle > 0:
-                            frozen_q, freeze_until = q_command, t + settle
+                            freeze_until = now + settle
 
-                if capture_hook is not None and t >= next_capture:
+                if capture_hook is not None and now >= next_capture:
                     # Pass the commanded joint target and scheduled gripper
                     # width so a collector can store the action that produced
                     # this observation, not just the measured state.
-                    capture_hook(t, result.frames, q_command,
-                                 plan.schedule.width_at(t))
+                    capture_hook(now, result.frames, q_command,
+                                 plan.schedule.width_at(plan_t))
                     result.captured += 1
                     next_capture += capture_period
                 result.frames += 1
-                tick += 1
-                elapsed = time.perf_counter() - tick_start
-                overruns.append(max(0.0, elapsed - dt))
-                if realtime:
-                    if sdk_period is not None:
-                        try:
-                            if self.robot.wait_period(sdk_period):
-                                continue
-                        except Exception:
-                            pass
-                        sdk_period = None
-                    time.sleep(max(0.0, dt - elapsed))
+                stream.wait()
+        except StreamAbort as exc:
+            result.aborted = True
+            result.reason = {
+                'servo_error': 'servo_j failed (robot may have left servo mode)',
+                'protective_stop': 'protective stop',
+            }.get(str(exc), str(exc))
+        except RobotUnavailable as exc:
+            result.aborted = True
+            result.reason = f'robot unavailable: {exc}'
         except KeyboardInterrupt:
             result.aborted = True
             result.reason = 'keyboard interrupt'
         finally:
-            result.duration = time.perf_counter() - started
+            result.duration = stream.elapsed()
+            overruns = sorted(max(0.0, work - dt) for work in stream.work)
             if overruns:
-                ordered = sorted(overruns)
-                result.overrun_p95_ms = ordered[int(0.95 * (len(ordered) - 1))] * 1000.0
+                result.overrun_p95_ms = overruns[int(0.95 * (len(overruns) - 1))] * 1000.0
             if result.aborted:
                 try:
                     self.robot.stop_motion()

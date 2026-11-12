@@ -21,9 +21,8 @@ import numpy as np
 
 from ..core.continuous import (ContinuousReference, gripper_allowed,
                                progress_allowed)
-from ..errors import RobotUnavailable
-from ..robot.mock import MockRobot
 from .chunks import ActionChunk, ChunkSource
+from .stream import ServoStream, StreamLimits, ensure_servo  # noqa: F401 (re-export)
 
 
 @dataclass
@@ -196,52 +195,6 @@ class _GripperWorker(threading.Thread):
                 return
 
 
-def _is_mock(robot) -> bool:
-    inner = getattr(robot, 'inner', robot)
-    return bool(getattr(inner, 'mock', False)) or isinstance(inner, MockRobot)
-
-
-def _wait_until(deadline: float) -> None:
-    remaining = deadline - time.perf_counter()
-    if remaining > 0.0004:
-        time.sleep(remaining - 0.0003)
-    while time.perf_counter() < deadline:
-        pass
-
-
-def ensure_servo(robot, dt: float, ticks: int = 5, realtime: bool = True) -> bool:
-    """Verify servo mode before streaming; rebuild the controller link if possible.
-
-    The RTDE control script can time out after a long idle prompt, so this sends
-    a few hold commands at the measured pose before any motion command.
-    """
-    for attempt in range(2):
-        state = robot.state()
-        if state.q is None:
-            return False
-        hold = np.asarray(state.q, dtype=float)
-        failures = 0
-        for _ in range(max(1, int(ticks))):
-            try:
-                if not robot.servo_j(hold, dt):
-                    failures += 1
-            except Exception:
-                failures += 1
-            if realtime:
-                time.sleep(dt)
-        if failures == 0:
-            return True
-        restart = getattr(robot, 'restart_control', None)
-        if attempt == 0 and callable(restart):
-            try:
-                if restart():
-                    continue
-            except Exception:
-                pass
-        break
-    return False
-
-
 def _validate_chunk(chunk: ActionChunk, reference: ContinuousReference,
                     action_hz: float, max_width: float) -> np.ndarray:
     if abs(float(chunk.action_hz) - float(action_hz)) > 1e-6:
@@ -262,12 +215,6 @@ def _validate_chunk(chunk: ActionChunk, reference: ContinuousReference,
     return actions
 
 
-def _stats(values, scale: float = 1.0) -> list:
-    if len(values) == 0:
-        return []
-    return np.percentile(np.asarray(values, dtype=float) * scale, [50, 95, 99, 100]).tolist()
-
-
 def run_continuous_stream(robot, gripper, source: ChunkSource,
                           config: ContinuousConfig | None = None, *,
                           abort_event: threading.Event | None = None,
@@ -285,34 +232,21 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
     dt = 1.0 / float(cfg.control_hz)
     if dt <= 0 or cfg.action_hz <= 0:
         raise ValueError('control_hz and action_hz must be positive')
-    hardware = not _is_mock(robot)
-    if not realtime and hardware:
-        raise ValueError('virtual time is forbidden on real hardware')
+    stream = ServoStream(robot, dt, realtime=realtime, mock_sleep_s=cfg.mock_sleep_s,
+                         limits=StreamLimits(
+                             max_tracking_error=cfg.max_tracking_error,
+                             tracking_gap=cfg.progress_tracking_gap,
+                             tracking_timeout_s=cfg.tracking_timeout_s,
+                             max_servo_gap_s=cfg.max_servo_gap_s))
+    hardware = stream.hardware
     abort_event = abort_event or threading.Event()
     end_event = end_event or threading.Event()
     stop = threading.Event()
     result = ContinuousResult(meta={'control_hz': cfg.control_hz,
                                     'action_hz': cfg.action_hz})
 
-    initial = robot.state()
-    if initial.q is None:
-        raise RobotUnavailable('continuous stream needs a joint state')
-    if initial.protective_stop:
-        raise RobotUnavailable('robot is in protective stop')
+    initial = stream.preflight()
     initial_q = np.asarray(initial.q, dtype=float)
-    if not np.all(np.isfinite(initial_q)):
-        raise RobotUnavailable('initial joint state is not finite')
-    if hardware and hasattr(robot, 'joints_within_safety'):
-        if not robot.joints_within_safety(initial_q):
-            raise RobotUnavailable('initial pose fails controller safety validation')
-
-    if hardware:
-        if not ensure_servo(robot, dt, realtime=realtime):
-            raise RobotUnavailable('cannot establish the servo stream')
-        try:
-            robot.stop_motion(0.5)
-        except Exception:
-            pass
 
     try:
         grip_last = float(gripper.latest_width())
@@ -338,6 +272,13 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
     if on_start is not None:
         on_start({'config': cfg, 'initial_state': initial, 'max_width': max_width})
 
+    stream.start()
+    if hardware:
+        try:
+            robot.stop_motion(0.5)
+        except Exception:
+            pass
+
     worker = _ChunkWorker(source, stop)
     grip_worker = _GripperWorker(gripper, stop) if gripper is not None else None
     worker.start()
@@ -346,7 +287,6 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
     if not worker.request(0):
         raise RuntimeError('cannot submit the first action request')
 
-    start = time.perf_counter()
     phase = 0.0
     chunk_start = 0.0
     offset = 0
@@ -356,41 +296,21 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
     requests = 1
     chunks = 0
     received = 0
-    commands = 0
-    tick = 0
     captures = 0
     phase_paused = 0
     gripper_gated = 0
     last_grip_time = -1e9
     next_capture = 0.0
-    tracking_bad_since = None
     phase_bad_since = None
     waiting_since = None
     final_settle = None
-    last_robot_time = initial.t
-    fresh_at = start
-    sends: list[float] = []
-    work_times: list[float] = []
     target_gap = 0.0
     tracking_gap = 0.0
     action_index = 0
-    next_deadline = start
-    now = start
-    sdk_period = None
-    if realtime and hardware:
-        init_period = getattr(robot, 'init_period', None)
-        frequency = float(getattr(getattr(robot, 'config', None), 'frequency', 0.0) or 0.0)
-        if callable(init_period) and (frequency <= 0 or abs(frequency - cfg.control_hz) < 1.0):
-            try:
-                sdk_period = init_period()
-            except Exception:
-                sdk_period = None
-
     try:
         while True:
-            began = time.perf_counter()
-            now = began if realtime else start + tick * dt
-            wall_elapsed = now - start
+            wall_elapsed = stream.begin()
+            now, began = stream.now, time.perf_counter()
             if abort_event.is_set():
                 raise RuntimeError('operator_abort')
             if end_event.is_set():
@@ -399,32 +319,8 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
             if cfg.max_trial_s > 0 and wall_elapsed >= cfg.max_trial_s:
                 result.end_reason = 'timeout'
                 break
-            if realtime and sends and began - sends[-1] > cfg.max_servo_gap_s:
-                raise RuntimeError('servo_gap: target stream exceeded timing limit')
 
-            measured = robot.state()
-            if measured.q is None:
-                raise RobotUnavailable('robot state lost joint positions')
-            measured_q = np.asarray(measured.q, dtype=float)
-            if not np.all(np.isfinite(measured_q)):
-                raise RuntimeError('invalid measured joints')
-            if measured.protective_stop:
-                raise RuntimeError('protective_stop')
-            if measured.t != last_robot_time:
-                last_robot_time, fresh_at = measured.t, began
-            if hardware and began - fresh_at > 0.1:
-                raise RuntimeError('stale_robot_state')
-
-            tracking_gap = float(np.max(np.abs(reference.q - measured_q)))
-            result.max_tracking_error = max(result.max_tracking_error, tracking_gap)
-            if tracking_gap > cfg.max_tracking_error:
-                raise RuntimeError(f'tracking_error: {tracking_gap:.4f} rad')
-            if tracking_gap > cfg.progress_tracking_gap:
-                tracking_bad_since = now if tracking_bad_since is None else tracking_bad_since
-                if now - tracking_bad_since > cfg.tracking_timeout_s:
-                    raise RuntimeError('tracking_timeout')
-            else:
-                tracking_bad_since = None
+            measured, measured_q, tracking_gap = stream.measure(reference.q)
             if grip_worker is not None and grip_worker.error:
                 raise RuntimeError('gripper_error: ' + grip_worker.error)
 
@@ -510,13 +406,7 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
                         raise RuntimeError('reference_catchup_timeout')
 
             q = reference.step(target[:dof])
-            send_at = time.perf_counter()
-            if realtime and sends and send_at - sends[-1] > cfg.max_servo_gap_s:
-                raise RuntimeError('servo_gap: computation exceeded timing limit')
-            if not robot.servo_j(q, dt):
-                raise RuntimeError('servo_error')
-            sends.append(send_at)
-            commands += 1
+            send_at = stream.send(q)
 
             grip_ok = gripper_allowed(float(np.max(np.abs(target[:dof] - q))), tracking_gap,
                                       cfg.gripper_reference_tolerance,
@@ -538,14 +428,15 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
                                             int(max(0.0, phase - chunk_start) * cfg.action_hz))
             if on_command is not None:
                 on_command({
-                    't': wall_elapsed, 'send_t': send_at - start,
+                    't': wall_elapsed, 'send_t': send_at - stream.start_time,
                     'q_cmd': q.tolist(), 'target': target[:dof].tolist(),
                     'gripper_cmd': grip_last, 'chunk': chunks,
                     'request': requests, 'action_index': action_index,
                     'qd_cmd': reference.v.tolist(), 'qdd_cmd': reference.a.tolist(),
                     'phase_s': phase, 'tracking_gap': tracking_gap,
                     'reference_gap': target_gap,
-                    'cycle_ms': 0.0 if len(sends) < 2 else (sends[-1] - sends[-2]) * 1000.0,
+                    'cycle_ms': (0.0 if len(stream.sends) < 2
+                                 else (stream.sends[-1] - stream.sends[-2]) * 1000.0),
                 })
             if on_sample is not None and wall_elapsed >= next_capture - 1e-6:
                 if gripper is not None:
@@ -580,23 +471,7 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
                     result.end_reason = 'model_done'
                     break
 
-            work_times.append(time.perf_counter() - began)
-            if realtime:
-                if sdk_period is not None:
-                    try:
-                        if robot.wait_period(sdk_period):
-                            tick += 1
-                            continue
-                    except Exception:
-                        pass
-                    sdk_period = None
-                next_deadline += dt
-                if next_deadline < time.perf_counter() - dt:
-                    next_deadline = time.perf_counter() + dt
-                _wait_until(next_deadline)
-            else:
-                time.sleep(max(0.0, float(cfg.mock_sleep_s)))
-            tick += 1
+            stream.wait()
     except Exception as exc:
         result.aborted = True
         result.end_reason = str(exc).split(':')[0] or type(exc).__name__
@@ -628,10 +503,11 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
                 result.end_reason = 'gripper_error'
                 result.error = grip_worker.error
 
-    gaps = np.diff(sends)
-    result.duration_s = max(0.0, now - start)
+    summary = stream.summary()
+    commands = summary['servo_commands']
+    result.duration_s = max(0.0, stream.elapsed())
     result.phase_s = phase
-    result.frames = tick + 1
+    result.frames = stream.ticks + 1
     result.servo_commands = commands
     result.chunks = chunks
     result.requests = requests
@@ -640,7 +516,8 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
     result.gripper_commands = 0 if grip_worker is None else grip_worker.sent
     result.phase_paused_ticks = phase_paused
     result.gripper_gated_ticks = gripper_gated
-    result.actual_send_hz = (float(1.0 / np.mean(gaps)) if len(gaps) and realtime else None)
-    result.send_gap_ms_p50_p95_p99_max = _stats(gaps, 1000.0)
-    result.work_ms_p50_p95_p99_max = _stats(work_times, 1000.0)
+    result.actual_send_hz = summary['actual_send_hz']
+    result.send_gap_ms_p50_p95_p99_max = summary['send_gap_ms_p50_p95_p99_max']
+    result.work_ms_p50_p95_p99_max = summary['work_ms_p50_p95_p99_max']
+    result.max_tracking_error = summary['max_tracking_error']
     return result

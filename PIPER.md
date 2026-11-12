@@ -349,8 +349,9 @@ Piper 真机允许 `use_native=False`，但 `servo_j` 底层仍是 SDK 的点对
 
 ### 宿主侧 IK（默认自动配置）
 
-`AgxPiperRobot` 默认 `ik_backend='auto'`。如果环境里装了 PyRoki，会自动用
-随包提供的 `assets/piperx_assets/assets/piper_x.urdf`、目标 link `link6` 和
+`AgxPiperRobot` 默认 `ik_backend='auto'`：环境里装了 robokit 就用 robokit
+（`RobokitIK`，Warp GPU），没装则不挂 IK。
+它用随包提供的 `assets/piperx_assets/assets/piper_x.urdf`、目标 link `link6` 和
 `joint1..joint6` 建一个宿主 IK：
 
 ```python
@@ -361,11 +362,14 @@ robot.move_j(q)
 ```
 
 - `ik_backend='none'` 可关闭自动 IK；
-- `ik_backend='pyroki'` 强制要求 PyRoki，缺失时构造阶段报错；
+- `ik_backend='robokit'` 强制要求 robokit，缺失时构造阶段报错；`'auto'`（默认）未安装时不挂 IK；
+- 选 robokit 的依据：同一批 1000 个可达随机目标（5 mm / 0.05 rad，固定 home
+  种子），robokit 成功 99.6%、约 1.4 ms/次（已移除的 PyRoki 后端为 79.9%、约 1.2 s/次）；
+- robokit 自带的 PiPER 模型和 Piper X 运动学不同（link6 最多差 169 mm），
+  必须用我们的 `piper_x.urdf`，不要用 `robokit.assets` 里的 piper；
 - `ik_target_link` 默认 `link6`（法兰）；配置了非零 `tcp_offset` 时需改成对应工具 link；
-- `ik_self_collision=True` 可加入自碰撞 cost，但会更慢；
 - `ik_warmup=True`（默认）会在 `connect()` 后用当前 TCP 位姿预热一次
-  JAX/PyRoki，避免第一次通用 `move_p` 再等编译；只读连接和
+  IK（robokit 编译 Warp 内核），避免第一次通用 `move_p` 再等编译；只读连接和
   `ik_warmup=False` 会跳过。预热只做计算，不会下发运动。
 - 真机 `move_p` 仍优先用控制器原生 P 运动；宿主 IK 主要用于
   `inverse_kinematics` 求关节角，再把结果交给原生 `move_j`。

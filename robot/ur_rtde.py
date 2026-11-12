@@ -50,7 +50,10 @@ class UrRtdeRobot(RobotBackend):
         super().__init__(spec, Capabilities(servo_j=True, servo_l=True, move_j=True,
                                             move_l=True,
                                             inverse_kinematics=not self.mock,
-                                            freedrive=True, gripper=False))
+                                            freedrive=True, gripper=False,
+                                            servo_j_kind='simulation' if self.mock else 'native_servo',
+                                            servo_j_timing='simulation_step' if self.mock else 'controller_dt',
+                                            stop_motion_kind='no_op' if self.mock else 'vendor_servo_stop'))
         self.control = None
         self.receive = None
         self._mock_robot = MockRobot(spec, home=self.config.home_joints,

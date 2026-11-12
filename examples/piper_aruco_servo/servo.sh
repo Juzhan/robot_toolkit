@@ -1,0 +1,32 @@
+python piper_aruco_real_probe.py \
+  --execute --yes \
+  --serial 263022075825 \
+  --fps 60 \
+  --exposure-ms 8 \
+  --camera-gain 96 \
+  --motion servo \
+  --control pbvs \
+  --marker-id 0 \
+  --distance .30 \
+  --control-hz 100 \
+  --lead .08 \
+  --reference-speed 1.2 \
+  --reference-accel 4 \
+  --reference-jerk 30 \
+  --camera-latency .03 \
+  --ibvs-gain 2.0 \
+  --ibvs-linear-speed .22 \
+  --ibvs-angular-speed .8 \
+  --ibvs-feedforward .9 \
+  --ibvs-ff-window .15 \
+  --ibvs-ff-deadband .02 \
+  --ibvs-ff-max .3 \
+  --ibvs-stop-px 3 \
+  --ibvs-resume-px 6 \
+  --ibvs-timeout .2 \
+  --ibvs-duration 0 \
+  --log outputs/aruco_real_debug/servo_run.jsonl \
+  --speed-percent 100 \
+  --steps 0 \
+  --hold \
+  --calibration outputs/robot_tasks/piper_calibrate_auto/calibration.json

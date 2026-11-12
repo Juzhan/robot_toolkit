@@ -25,7 +25,10 @@ class MockRobot(RobotBackend):
         super().__init__(spec, Capabilities(servo_j=True, move_j=True,
                                             servo_l=inverse_kinematics is not None,
                                             inverse_kinematics=inverse_kinematics is not None,
-                                            freedrive=True, gripper=spec.gripper is not None))
+                                            freedrive=True, gripper=spec.gripper is not None,
+                                            servo_j_kind='simulation',
+                                            servo_j_timing='simulation_step',
+                                            stop_motion_kind='unsupported'))
         self.clock = clock
         self._t0 = clock()
         self.max_velocity = float(max_velocity)

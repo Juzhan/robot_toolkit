@@ -1,11 +1,9 @@
 """Continuous, jerk-limited joint reference generation.
 
-The Mac real-robot deployment used Ruckig at 125 Hz to turn 10 Hz policy
-actions into a smooth servo stream.  Ruckig is optional in the toolkit so a
-machine that only needs teleoperation or replay still imports without extra
-native dependencies.  When it is installed the exact online trajectory
-generator is used; otherwise a bounded fallback keeps position, velocity,
-acceleration and jerk inside the configured limits.
+Ruckig generates smooth references independently of the robot transport.
+The module imports without the optional native dependency, but constructing
+a reference requires it.  There is no substitute algorithm: the former
+hand-written tracker could limit-cycle around a static target.
 
 The class is deliberately independent of any robot, policy or camera code.
 """
@@ -47,8 +45,7 @@ class ContinuousReference:
 
     ``step(target)`` advances by exactly ``dt`` and returns the next joint
     position.  The target may jump; the reference itself is continuous in
-    position, velocity, acceleration and (with Ruckig, or approximately with
-    the fallback) jerk.
+    position, velocity, acceleration and jerk.
     """
 
     def __init__(self, q, dt: float = 0.008, speed: float = 0.8,
@@ -81,17 +78,12 @@ class ContinuousReference:
         self.a = np.zeros(self.dof, dtype=float)
 
         requested = str(backend or 'auto').strip().lower()
-        if requested not in ('auto', 'ruckig', 'fallback'):
-            raise ValueError("backend must be 'auto', 'ruckig' or 'fallback'")
-        if requested == 'ruckig' and Ruckig is None:
-            raise ImportError('Ruckig 未安装：pip install ruckig，或使用 backend="fallback"')
-        self.backend = ('ruckig' if Ruckig is not None and requested in ('auto', 'ruckig')
-                        else 'fallback')
-        self._otg = None
-        self._inp = None
-        self._out = None
-        if self.backend == 'ruckig':
-            self._init_ruckig()
+        if requested not in ('auto', 'ruckig'):
+            raise ValueError("backend must be 'auto' or 'ruckig'")
+        if Ruckig is None:
+            raise ImportError('Ruckig is required for continuous motion; install ruckig.')
+        self.backend = 'ruckig'
+        self._init_ruckig()
 
     # ---------------------------------------------------------------- helpers
     def _init_ruckig(self) -> None:
@@ -121,11 +113,6 @@ class ContinuousReference:
     # ---------------------------------------------------------------- update
     def step(self, target) -> np.ndarray:
         target = self.validate(target)
-        if self.backend == 'ruckig':
-            return self._step_ruckig(target)
-        return self._step_fallback(target)
-
-    def _step_ruckig(self, target: np.ndarray) -> np.ndarray:
         self._inp.target_position = target.tolist()
         result = self._otg.update(self._inp, self._out)
         if result not in (Result.Working, Result.Finished):
@@ -135,46 +122,6 @@ class ContinuousReference:
         self.a = np.asarray(self._out.new_acceleration, dtype=float)
         self.validate(self.q)
         self._out.pass_to_input(self._inp)
-        return self.q.copy()
-
-    def _step_fallback(self, target: np.ndarray) -> np.ndarray:
-        """Bounded second-order tracker.
-
-        It is not a full time-optimal S-curve, but every output respects the
-        configured velocity, acceleration and jerk bounds and converges to a
-        static target.  Install Ruckig for the deployment-grade generator.
-        """
-        dt = self.dt
-        error = target - self.q
-        # Desired speed is the smaller of a proportional demand and the speed
-        # from which the remaining distance can still be braked at ``amax``.
-        desired = np.clip(2.0 * error, -self.max_velocity, self.max_velocity)
-        # A conservative braking envelope leaves room for the jerk-limited
-        # acceleration ramp; using the full ``v^2/(2a)`` distance overshoots.
-        braking = np.sqrt(np.maximum(0.0, 0.5 * self.max_acceleration * np.abs(error)))
-        desired = np.sign(desired) * np.minimum(np.abs(desired), braking)
-        desired_acceleration = np.clip((desired - self.v) / dt,
-                                       -self.max_acceleration, self.max_acceleration)
-        jerk_step = self.max_jerk * dt
-        self.a = self.a + np.clip(desired_acceleration - self.a, -jerk_step, jerk_step)
-        self.a = np.clip(self.a, -self.max_acceleration, self.max_acceleration)
-        self.v = np.clip(self.v + self.a * dt, -self.max_velocity, self.max_velocity)
-        self.q = self.q + self.v * dt
-
-        # Do not push through a joint bound; stop the reference at the bound.
-        below = self.q < self.lower
-        above = self.q > self.upper
-        if np.any(below) or np.any(above):
-            self.q = np.clip(self.q, self.lower, self.upper)
-            self.v = np.where(below | above, 0.0, self.v)
-            self.a = np.where(below | above, 0.0, self.a)
-
-        # Settle exactly on a reached target instead of creeping around it.
-        settled = (np.abs(target - self.q) < 1e-6) & (np.abs(self.v) < 1e-3)
-        if np.any(settled):
-            self.q = np.where(settled, target, self.q)
-            self.v = np.where(settled, 0.0, self.v)
-            self.a = np.where(settled, 0.0, self.a)
         return self.q.copy()
 
 

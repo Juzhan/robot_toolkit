@@ -20,6 +20,9 @@ run.bat piper_master_slave     # 按 JSON 里的 mode 启动
 Agent / Python 调用的统一只读状态、能力查询与实测运动结果：
 [接口约定与示例](docs/agent_api.md)。保留原有布尔运动接口，不自动使能、不绕过安全包装器。
 
+实际控制方式、PBVS/IBVS 真机经验与验收边界：
+[控制契约与实机经验](docs/control_contract.md)。同名 `servo_j` 不代表相同的原生伺服、时序或停止能力。
+
 ---
 
 ## 1. 设计原则
@@ -57,7 +60,7 @@ robot_toolkit/
 ├── core/
 │   ├── conventions.py        # RobotSpec / GripperSpec，7 维契约
 │   ├── mathutils.py          # 位姿/旋转/四元数/齐次变换（纯 NumPy）
-│   ├── continuous.py         # Ruckig 可选 + 限幅回退的连续关节参考
+│   ├── continuous.py         # 连续运动要求 Ruckig；旧回退仅供显式离线实验
 │   ├── safety.py             # JointLimits / SafetyGuard / WorkspaceBox / Watchdog
 │   └── rate.py               # 定频循环 + 超时统计
 ├── robot/
@@ -572,9 +575,13 @@ result = run_continuous_stream(robot, gripper, source, config,
   RTDE 控制器周期；Mock / Piper / MuJoCo 没有控制器周期时返回 `None/False`，
   上层自动回退到 `time.perf_counter()` + `sleep()` 的软件时钟。
 * UR 在 Windows/Linux 使用控制器周期；macOS 保留实测稳定的主机时钟分支。
-* `ContinuousReference` 默认自动使用 Ruckig；没安装时退化为限幅追踪器，
-  仍保证速度/加速度/急动度不越界。需要与真机部署完全一致时：
-  `pip install robot-toolkit[control]`。
+* `ContinuousReference` 的 `auto/ruckig` 路径要求 Ruckig；未安装时在发令前报错，
+  不再静默换算法。安装方式：`pip install robot-toolkit[control]`。
+  旧 `fallback` 已观察到固定目标振荡，仅供显式离线实验，连续执行器禁止真机使用。
+* 同名 `servo_j` 不保证相同的执行语义：Piper 是 SDK `move_j` 位置目标更新，
+  UR 是 RTDE `servoJ`，MuJoCo 是仿真步进。用 `describe()['capabilities']` 查询
+  `servo_j_kind`、`servo_j_timing` 和 `stop_motion_kind`；详见
+  [控制契约与实机经验](docs/control_contract.md)。
 * Robotiq URCap 可设置 `require_fresh_measurement=true`：实测宽度超过 1 秒
   未更新时直接报错，不再用最后的目标宽度冒充观测。
 

@@ -6,14 +6,16 @@ can collect a dataset without reimplementing timestamp/image plumbing.
 """
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
 import numpy as np
 
 from ..camera import CameraHub
-from ..errors import DatasetError
+from ..errors import DatasetError, RobotUnavailable
 from .export import export_lerobot
+from .observation import RobotCameraSynchronizer, split_camera_frames
 from .recorder import EpisodeRecorder
 from .schema import DatasetSchema
 
@@ -28,11 +30,20 @@ class EpisodeCollector:
     def __init__(self, root, schema: DatasetSchema, robot=None, gripper=None,
                  cameras=(), export=export_lerobot, fps: float | None = None,
                  min_interval_s: float = 0.0, clock=time.monotonic,
-                 max_frames: int | None = None, compress: bool = False):
+                 max_frames: int | None = None, compress: bool = False,
+                 synchronize: bool = False, sync_max_skew_s: float = 0.05,
+                 sync_max_frame_age_s: float = 0.3):
         self.schema = schema
         self.robot = robot
         self.gripper = gripper
         self.hub = CameraHub(cameras) if cameras else None
+        self.synchronizer = None
+        if synchronize:
+            if robot is None or self.hub is None:
+                raise ValueError('synchronized collection needs a robot and cameras')
+            self.synchronizer = RobotCameraSynchronizer(
+                robot, self.hub, max_skew_s=sync_max_skew_s,
+                max_frame_age_s=sync_max_frame_age_s)
         self.min_interval_s = max(0.0, float(min_interval_s))
         self.clock = clock
         self._last_capture = -1e9
@@ -66,6 +77,8 @@ class EpisodeCollector:
                 if not camera.opened:
                     camera.open()
             self.hub.warmup()
+        if self.synchronizer is not None:
+            self.synchronizer.clear()
         self._started = True
         self._last_capture = -1e9
         return self.recorder.start(task, meta=meta)
@@ -93,6 +106,10 @@ class EpisodeCollector:
         ``action`` defaults to the observation vector.  This is the right
         fallback for teleoperation where the controller target is Cartesian;
         callers with joint-space targets can pass an explicit action.
+
+        With synchronize=True the first camera's matched robot sample is the
+        observation. Every camera's pairing evidence is stored in the raw frame
+        as synchronization_json. Pre-read state without timing is rejected.
         """
         if not self._started:
             return False
@@ -101,12 +118,33 @@ class EpisodeCollector:
             return True
         if self.robot is None:
             raise DatasetError('capture_state needs a robot backend')
-        if state is None:
+        synchronized = None
+        if self.synchronizer is not None:
+            if state is not None:
+                raise DatasetError('synchronized capture cannot use an untimed state; '
+                                   'use synchronizer.add_state with the actual read window')
+            if extra is not None and 'synchronization_json' in extra:
+                raise DatasetError('synchronization_json is reserved for pairing evidence')
+            try:
+                synchronized = self.synchronizer.observe()
+            except RobotUnavailable as exc:
+                raise DatasetError(str(exc)) from exc
+            state = synchronized['state']
+            evidence = synchronized['synchronization']
+            evidence['action_alignment'] = ('reference_state_copy' if action is None
+                                            else 'caller_supplied_not_time_aligned')
+            extra = dict(extra or {})
+            extra['synchronization_json'] = json.dumps(evidence, allow_nan=False)
+        elif state is None:
             state = self.robot.state()
         if state.q is None:
             raise DatasetError('robot state has no joint positions')
         width = None
-        if self.gripper is not None:
+        if synchronized is not None:
+            width = state.extra.get('gripper_width', state.extra.get('gripper'))
+            if self.schema.robot.gripper is not None and (width is None or not np.isfinite(width)):
+                raise DatasetError('synchronized capture needs gripper width in the matched state')
+        elif self.gripper is not None:
             try:
                 width = float(self.gripper.width)
             except Exception:
@@ -117,7 +155,8 @@ class EpisodeCollector:
             width = state.extra.get('gripper_width')
         observation = self.schema.observation(state.q, width)
         action_vector = observation if action is None else np.asarray(action, dtype=np.float32)
-        images, depth = self._camera_payload(strict=strict_cameras)
+        images, depth = (split_camera_frames(synchronized['frames']) if synchronized is not None
+                 else self._camera_payload(strict=strict_cameras))
         self._last_capture = now
         self._last_state = state
         return self.recorder.capture(observation, action_vector,
@@ -131,6 +170,8 @@ class EpisodeCollector:
         """Capture already assembled state/action vectors (e.g. a trajectory)."""
         if not self._started:
             return False
+        if self.synchronizer is not None:
+            raise DatasetError('synchronized capture requires timed robot state, not bare vectors')
         now = self.clock()
         if now - self._last_capture < self.min_interval_s:
             return True
