@@ -102,6 +102,7 @@ class SphereRobot:
 
     def __init__(self, chain: UrdfChain, spheres: dict, padding_m=0.):
         self.chain = chain
+        self.padding_m = float(padding_m)
         names, centers, radii = [], [], []
         for link, items in spheres.items():
             if link not in chain.links:
@@ -215,6 +216,36 @@ class PointCloud:
             gap = np.linalg.norm(points[:, None, :] - chunk[None], axis=-1).min(axis=1)
             best = np.minimum(best, gap)
         return (best - self.radius).reshape(shape)
+
+
+class DistanceGrid:
+    """Sampled distance field (e.g. an ESDF built from depth) on an axis-aligned grid.
+
+    ``distance[i, j, k]`` is the distance in metres from the centre of cell
+    ``origin + (i, j, k) * voxel`` to the nearest obstacle (<= 0 inside). A query
+    returns the nearest cell's value minus half a cell diagonal, a lower bound
+    because a distance field is 1-Lipschitz. Points outside the grid get
+    ``outside`` (inf: the map only covers the workspace it observes).
+    """
+
+    def __init__(self, origin, voxel, distance, outside=np.inf, name='depth',
+                 ignore_links=(), stamp=None):
+        self.origin = np.asarray(origin, float).reshape(3)
+        self.voxel = float(voxel)
+        self.values = np.asarray(distance, float)
+        if self.values.ndim != 3 or not self.voxel > 0:
+            raise ConfigurationError('distance grid needs a 3-D array and a positive voxel')
+        self.outside = float(outside)
+        self.name, self.ignore_links, self.stamp = name, set(ignore_links), stamp
+
+    def distance(self, points):
+        points = np.asarray(points, float)
+        index = np.rint((points - self.origin) / self.voxel).astype(int)
+        inside = np.all((index >= 0) & (index < self.values.shape), axis=-1)
+        result = np.full(points.shape[:-1], self.outside)
+        i = index[inside]
+        result[inside] = self.values[i[:, 0], i[:, 1], i[:, 2]] - self.voxel * np.sqrt(3) / 2
+        return result
 
 
 def obstacle_from_dict(item):

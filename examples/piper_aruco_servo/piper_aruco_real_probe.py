@@ -491,55 +491,19 @@ class ServoStream(threading.Thread):
         self.stop_event = threading.Event()
         self.error = None
         self.collision = collision
-        self.collision_clearance = collision_clearance
-        self.accel, self.jerk = accel, jerk
-        self.collision_brakes = 0
+        self.brake = None
+        if collision is not None:
+            from robot_toolkit.control.guarded import CollisionBrake
+
+            self.brake = CollisionBrake(collision, accel, jerk, self.dt, collision_clearance)
+
+    @property
+    def collision_brakes(self):
+        return 0 if self.brake is None else self.brake.brakes
 
     def reference_position(self):
         with self.lock:
             return self.reference_q.copy()
-
-    def collision_brake(self, q, v, a=None):
-        """True if the joint-wise jerk-limited stopping point would get closer than allowed."""
-        a = np.zeros_like(v) if a is None else a
-        direction = np.sign(v)
-        speed = np.abs(v)
-        push = np.maximum(direction * a, 0.)          # still accelerating along v
-        speed = speed + push ** 2 / (2 * self.jerk)  # speed gained while that ramps down
-        distance = (speed ** 2 / (2 * self.accel) + speed * (self.accel + push) / self.jerk
-                    + speed * 3 * self.dt)
-        stop = q + direction * distance
-        here, ahead = self.collision.clearances(np.stack([q, stop]))   # one batched FK
-        if here < self.collision.margin_m:
-            self.collision.check_position(q)   # hard floor: raises with the details
-        return ahead < min(self.collision.margin_m + self.collision_clearance, here), stop
-
-    def collision_speed_scale(self, q, v, a=None):
-        """Velocity scale so the jerk-limited stop along ``v`` keeps the clearance band.
-
-        Linearises the clearance lost per rad along ``v`` (worst of two probe lengths);
-        moving away from every obstacle is never slowed.
-        """
-        speed = float(np.max(np.abs(v)))
-        if speed == 0.:
-            return 1.
-        direction = v / speed
-        here, near, far = self.collision.clearances(
-            np.stack([q, q + direction * .01, q + direction * .05]))
-        rate = max((here - near) / .01, (here - far) / .05)
-        if rate <= 0.:
-            return 1.
-        room = (here - self.collision.margin_m - self.collision_clearance) / rate
-        if room <= 0.:
-            return 0.
-        # Largest s with s^2/(2a) + s*(a/j + 3dt) <= room (conservative jerk ramps), less
-        # the speed still gained while a current acceleration along v ramps down.
-        b = self.accel / self.jerk + 3 * self.dt
-        allowed = self.accel * (-b + np.sqrt(b * b + 2 * room / self.accel))
-        if a is not None:
-            push = max(float(np.max(np.asarray(a) * np.sign(direction))), 0.)
-            allowed -= push ** 2 / (2 * self.jerk)
-        return min(1., max(allowed, 0.) / speed)
 
     def set_goal(self, goal):
         with self.lock:
@@ -569,7 +533,6 @@ class ServoStream(threading.Thread):
 
     def run(self):
         deadline = time.perf_counter()
-        brake = None
         try:
             while not self.stop_event.is_set():
                 state = self.robot.state()
@@ -578,22 +541,14 @@ class ServoStream(threading.Thread):
                         self.history.append((time.perf_counter(), state))
                         self.latest = state
                 q_ref = self.reference.step(self.get_goal())
-                if self.collision is not None:
-                    # Hard floor (raised inside collision_brake when moving); the main
-                    # loop's finally stops the arm.
-                    if not np.any(self.reference.v) or np.array_equal(self.get_goal(), brake):
-                        self.collision.check_position(q_ref)
-                    else:
-                        unsafe, stop = self.collision_brake(q_ref, self.reference.v,
-                                                            self.reference.a)
-                        if unsafe:
-                            # Stop at the farthest clear point of the stopping path (once:
-                            # re-braking every cycle would creep on); the vision loop's next
-                            # gated goal replaces it.
-                            self.collision_brakes += 1
-                            brake = q_ref + (stop - q_ref) * self.collision.safe_fraction(
-                                q_ref, stop, self.collision_clearance)
-                            self.set_goal(brake)
+                if self.brake is not None:
+                    # Hard floor raises (the main loop's finally stops the arm); a motion
+                    # whose stop would enter the clearance band is redirected to the
+                    # farthest clear stopping point until the vision loop's next gated goal.
+                    stop = self.brake.brake_goal(q_ref, self.reference.v, self.reference.a,
+                                                 self.get_goal())
+                    if stop is not None:
+                        self.set_goal(stop)
                 with self.lock:
                     self.reference_q = q_ref.copy()
                     self.reference_v = self.reference.v.copy()
@@ -724,12 +679,9 @@ class IbvsStream(ServoStream):
                     self.block_high & (room_high < margin_high + .01))
                 velocity[(self.block_low & (velocity < 0))
                          | (self.block_high & (velocity > 0))] = 0.
-                if self.collision is not None and np.any(velocity):
-                    scale = self.collision_speed_scale(current, velocity,
+                if self.brake is not None and np.any(velocity):
+                    velocity *= self.brake.speed_scale(current, velocity,
                                                        self.inputs.current_acceleration)
-                    if scale < 1.:
-                        velocity *= scale
-                        self.collision_brakes += 1
                 self.inputs.target_velocity = velocity.tolist()
                 result = self.otg.update(self.inputs, self.outputs)
                 if result not in (Result.Working, Result.Finished):
