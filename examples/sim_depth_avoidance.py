@@ -82,7 +82,7 @@ class SimCamera:
             self.outside = mujoco.Renderer(self.model, 480, 640, max_geom=3000)
             self.wrist = mujoco.Renderer(self.model, 240, 320)
             self.free = mujoco.MjvCamera()
-            self.free.lookat[:] = [.33, .05, .15]
+            self.free.lookat[:] = [.30, .0, .15]
             self.free.distance, self.free.azimuth, self.free.elevation = .95, 215., -22.
         self.data.qpos[:6] = q
         mujoco.mj_forward(self.model, self.data)

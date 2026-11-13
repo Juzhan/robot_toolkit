@@ -16,7 +16,7 @@ from robot_toolkit.external_tools import ExternalToolError, ExternalTools, Sam3C
 def test_catalog_load_is_offline_and_creates_nothing(tmp_path):
     root = tmp_path / 'tools'
     tools = ExternalTools.load(root=root)
-    assert set(tools.definitions) == {'sam3', 'bundlesdf', 'anygrasp', 'curobo'}
+    assert set(tools.definitions) == {'sam3', 'bundlesdf', 'anygrasp', 'curobo', 'fast_foundationstereo'}
     assert not root.exists()
     description = tools.describe('sam3')
     assert description['status'] == 'disabled' and description['ready'] is None

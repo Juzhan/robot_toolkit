@@ -34,31 +34,35 @@ def depth_to_points(depth, K, stride=1, depth_min=0.05, depth_max=1.5):
     return np.stack([x, y, z], axis=1)
 
 
-def robot_pixel_mask(depth, K, centers_camera, radii, tolerance=0.01, grow_rad=0.01):
-    """Pixels showing the robot's own spheres, or anything hidden behind them.
+def robot_pixel_mask(depth, K, centers_camera, radii, tolerance=0.01):
+    """Pixels whose 3-D point lies on the robot itself (inside a sphere + ``tolerance``).
 
-    Exact cone test: a pixel ray is inside a sphere's silhouette if its angle to the
-    centre is at most ``asin(r / |c|)`` (+ ``grow_rad``). It is masked unless its
-    depth is clearly in front of the sphere (``< z - r - tolerance``): that is a
-    real object between the camera and the arm and must stay an obstacle. Spheres
-    around the lens (the camera's own body) are skipped.
+    Only those points are removed. A pixel seen past an over-sized sphere is a
+    real observation of whatever is behind the true (thinner) link and is kept,
+    as is anything between the camera and the arm.
     """
     depth = np.asarray(depth, float)
     K = np.asarray(K, float)
     h, w = depth.shape
-    v, u = np.mgrid[0:h, 0:w]
+    mask = np.zeros(depth.shape, bool)
+    valid = np.isfinite(depth) & (depth > 0.)
+    if not valid.any():
+        return mask
+    v, u = np.nonzero(valid)
+    z = depth[v, u]
     y = (v - K[1, 2]) / K[1, 1]
     x = (u - K[0, 2] - K[0, 1] * y) / K[0, 0]
-    rays = np.stack([x, y, np.ones_like(x)], -1)
-    rays /= np.linalg.norm(rays, axis=-1, keepdims=True)
-    unseen = ~np.isfinite(depth) | (depth <= 0.)
-    mask = np.zeros(depth.shape, bool)
-    for center, r in zip(np.asarray(centers_camera, float), np.asarray(radii, float)):
-        distance = float(np.linalg.norm(center))
-        if distance <= r or center[2] + r <= 0.:
-            continue   # the camera's own body, or entirely behind the image plane
-        inside = rays @ (center / distance) >= np.cos(np.arcsin(r / distance) + grow_rad)
-        mask |= inside & (unseen | (depth >= center[2] - r - tolerance))
+    points = np.stack([x * z, y * z, z], 1)
+    inside = np.zeros(len(points), bool)
+    for center, radius in zip(np.asarray(centers_camera, float), np.asarray(radii, float)):
+        reach = radius + tolerance
+        if np.linalg.norm(center) <= radius or center[2] + reach <= 0.:
+            continue   # the camera's own body, or behind the image plane
+        near = np.abs(points[:, 2] - center[2]) <= reach      # cheap pre-filter
+        if near.any():
+            gap = np.linalg.norm(points[near] - center, axis=1)
+            inside[np.flatnonzero(near)[gap <= reach]] = True
+    mask[v[inside], u[inside]] = True
     return mask
 
 
@@ -108,6 +112,8 @@ class DepthObstacleMap:
         self.self_tolerance = float(self_tolerance)
         self.name, self.clock = name, clock
         self.points, self.stamps = np.empty((0, 3)), np.empty(0)
+        self.views = []          # (T_base_camera, K, filtered depth) of recent frames
+        self.max_views = 12
         self.grid = None
         self.backend = backend
         if backend == 'robokit':
@@ -139,6 +145,7 @@ class DepthObstacleMap:
         """Fuse one frame taken at joint state ``q``; returns the new ``DistanceGrid``."""
         stamp = self.clock() if stamp is None else stamp
         depth, K, T_base_camera, _ = self.filtered_depth(depth, K, q)
+        self.views = (self.views + [(T_base_camera, K, depth)])[-self.max_views:]
         if self.backend == 'robokit':
             values = self._sdf.update(depth, K, T_base_camera)
             self.grid = DistanceGrid(self._sdf.origin, self.voxel, values, name=self.name,
@@ -181,6 +188,136 @@ class DepthObstacleMap:
                              return_index=True)
         self.points, self.stamps = points[index], stamps[index]
         return KdPoints(self.points, self.voxel * np.sqrt(3), self.name, stamp)
+
+    def seen_free(self, centers, radii):
+        """True for spheres some recent view saw through: the ray to the centre hit
+        a surface beyond the far side of the sphere."""
+        centers = np.asarray(centers, float)
+        free = np.zeros(len(centers), bool)
+        for T, K, depth in self.views:
+            camera = (centers - T[:3, 3]) @ T[:3, :3]
+            z = camera[:, 2]
+            ok = z > 1e-3
+            u = np.full(len(z), -1)
+            v = np.full(len(z), -1)
+            u[ok] = np.rint(K[0, 0] * camera[ok, 0] / z[ok] + K[0, 1] * camera[ok, 1] / z[ok]
+                            + K[0, 2])
+            v[ok] = np.rint(K[1, 1] * camera[ok, 1] / z[ok] + K[1, 2])
+            ok &= (u >= 0) & (u < depth.shape[1]) & (v >= 0) & (v < depth.shape[0])
+            measured = np.zeros(len(z))
+            measured[ok] = depth[v[ok], u[ok]]
+            free |= ok & (measured > self.depth_min) & (measured >= z + np.asarray(radii))
+        return free
+
+    def column_points(self, floor_z=0.0, min_height=0.02, voxel=None):
+        """Mapped points above ``floor_z + min_height`` extruded down to the floor.
+
+        Tabletop prior (2.5-D): a top-down camera sees an object's top but not its
+        sides, so the space under every observed surface is taken as solid
+        (overhangs become solid too, which is conservative).
+        """
+        voxel = self.voxel if voxel is None else voxel
+        top = self.points[self.points[:, 2] > floor_z + min_height]
+        if not len(top):
+            return np.empty((0, 3))
+        columns = [top]
+        for depth in np.arange(voxel, top[:, 2].max() - floor_z, voxel):
+            below = top[top[:, 2] - depth > floor_z].copy()
+            below[:, 2] -= depth
+            columns.append(below)
+        return np.concatenate(columns)
+
+    def unknown_points(self, q_start, voxel=0.02, floor_z=0.0):
+        """Centres of workspace cells nobody has seen through (and the arm does not
+        occupy at ``q_start``): give them to a planner as obstacles so it plans in
+        known-free space only."""
+        axes = [np.arange(lo + voxel / 2, hi, voxel) for lo, hi in
+                zip(self.bounds_min, self.bounds_max)]
+        cells = np.stack(np.meshgrid(*axes, indexing='ij'), -1).reshape(-1, 3)
+        cells = cells[cells[:, 2] > floor_z + voxel / 2]
+        free = self.seen_free(cells, np.full(len(cells), voxel * .87))
+        robot = self.guard.robot
+        start = robot.spheres(q_start)
+        for index in range(0, len(cells), 20000):
+            chunk = cells[index:index + 20000]
+            free[index:index + 20000] |= (np.linalg.norm(chunk[:, None] - start[None], axis=-1)
+                                          <= robot.radii[None] + voxel).any(axis=1)
+        return cells[~free]
+
+    def unknown_columns(self, q_start, lower_xy, upper_xy, height=.3, floor_z=0.0, voxel=.02):
+        """Points filling every unobserved table cell in ``lower_xy..upper_xy`` up to
+        ``height`` (except where the arm stands at ``q_start``): planner obstacles
+        that keep proposals over observed table, matching ``heightmap_check``."""
+        observed = {tuple(c) for c in np.floor(self.points[:, :2] / self.voxel).astype(int)}
+        robot = self.guard.robot
+        start = robot.spheres(q_start)
+        xs = np.arange(lower_xy[0], upper_xy[0], voxel)
+        ys = np.arange(lower_xy[1], upper_xy[1], voxel)
+        columns = []
+        for x in xs:
+            for y in ys:
+                cell = (int(np.floor(x / self.voxel)), int(np.floor(y / self.voxel)))
+                if cell in observed:
+                    continue
+                if (np.linalg.norm(start[:, :2] - [x, y], axis=1) <= robot.radii).any():
+                    continue
+                columns.append([x, y])
+        if not columns:
+            return np.empty((0, 3))
+        columns = np.array(columns)
+        zs = np.arange(floor_z + voxel / 2, height, voxel)
+        return np.concatenate([np.c_[columns, np.full(len(columns), z)] for z in zs])
+
+    def heightmap_check(self, q_start, links=('link5', 'link6', 'gripper_base'), every=4):
+        """2.5-D companion of ``column_points``: the hand may only pass over table
+        cells whose height was observed (or that the arm covers at ``q_start``).
+        Returns ``check(samples) -> reason or None``."""
+        robot = self.guard.robot
+        hand = np.isin(robot.links, list(links))
+        observed = {tuple(cell) for cell in np.floor(self.points[:, :2] / self.voxel).astype(int)}
+        start = robot.spheres(q_start)
+        offsets = np.array([[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) * .7
+
+        def check(samples):
+            for index in sorted({*range(0, len(samples), every), len(samples) - 1}):
+                centers = robot.spheres(samples[index])[hand]
+                radii = robot.radii[hand]
+                for center, radius in zip(centers, radii):
+                    if (np.linalg.norm(start - center, axis=1) <= robot.radii).any():
+                        continue
+                    for offset in offsets:
+                        cell = tuple(np.floor((center[:2] + offset * radius) / self.voxel)
+                                     .astype(int))
+                        if cell not in observed:
+                            check.spot = center.copy()
+                            return (f'path moves the hand over an unobserved spot '
+                                    f'{np.round(center[:2], 3).tolist()} at sample {index}; '
+                                    'look there first')
+            return None
+        check.spot = None
+        return check
+
+    def unobserved_check(self, q_start, links=('link5', 'link6', 'gripper_base'), every=4):
+        """A path check for planners: the hand may only move through space that was
+        seen to be free, or that the arm itself occupies at ``q_start``. Unseen space
+        is not assumed empty. Returns ``check(samples) -> reason or None``."""
+        robot = self.guard.robot
+        hand = np.isin(robot.links, list(links))
+        radii = robot.radii[hand]
+        start = robot.spheres(q_start)
+        start_radii = robot.radii
+
+        def check(samples):
+            for index in sorted({*range(0, len(samples), every), len(samples) - 1}):
+                centers = robot.spheres(samples[index])[hand]
+                inside_start = (np.linalg.norm(centers[:, None] - start[None], axis=-1)
+                                <= start_radii[None]).any(axis=1)
+                unknown = ~(inside_start | self.seen_free(centers, radii))
+                if unknown.any():
+                    return (f'path moves the hand through unobserved space at sample {index} '
+                            f'({int(unknown.sum())} spheres); look there first')
+            return None
+        return check
 
     def age(self, now=None):
         if self.grid is None:

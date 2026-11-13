@@ -20,6 +20,27 @@ referenced cuRobo version. It does not pin uninstalled weights or transitive CUD
 dependencies. Before deployment, record the actual source commit, dependency
 lock, model snapshot revision and artifact checksums in the external runtime.
 
+## Fast-FoundationStereo depth service (on demand)
+
+`perception.StereoDepthClient` + `perception.register_depth`; the service script is
+`<root>/fast_foundationstereo/serve.py` (loopback, ONNX Runtime CUDA, refuses CPU
+fallback), using the official C-Fast-FoundationStereo ONNX and the D435 left/right
+IR pair (`RealSenseCamera(..., infrared=True).stereo_pair()`).
+
+```bash
+cd ~/.local/share/robot-toolkit-tools/fast_foundationstereo
+environment/bin/python serve.py --port 6790        # health: GET /health
+```
+
+Measured 2026-11-13 on the wrist D435 (640x480, table at 0.2-0.36 m): 0.15 s warm
+per pair (1.7 s first call), 100% coverage, median 0.5 mm from the D435 where both
+are valid, table own-plane RMS 1.35 mm (D435 single frame 4.97 mm).
+
+**Not a safety source.** Closer than its disparity range (the gripper ~7 cm from the
+lens) it reports plausible background instead of the near surface; InfiniDepth RGB+D
+does the same. Use it to add obstacles or refine geometry, never to clear space the
+D435 left empty. Evidence: `outputs/depth_compare/wrist_table/` in the parent workspace.
+
 ## Additional reconstruction candidate
 
 [RaySt3R](https://github.com/Duisterhof/rayst3r), inspected at

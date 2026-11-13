@@ -28,8 +28,13 @@ def _import_realsense():
 class RealSenseCamera(ThreadedCamera):
     def __init__(self, name: str = 'camera', serial: str = '', width: int = 640,
                  height: int = 480, fps: int = 30, depth: bool = False,
-                 exposure_ms: float | None = None, gain: float | None = None):
+                 exposure_ms: float | None = None, gain: float | None = None,
+                 infrared: bool = False):
         super().__init__(name, width, height, fps, depth)
+        # Left/right IR (Y8) pair for on-demand stereo depth (perception.StereoDepthClient).
+        self.infrared = bool(infrared)
+        self._ir_pair = None
+        self.ir_calibration = None
         self.serial = str(serial)
         # 手动曝光（毫秒）：短曝光可减少运动拖影；None = 自动曝光
         self.exposure_ms = exposure_ms
@@ -49,6 +54,10 @@ class RealSenseCamera(ThreadedCamera):
         if self.depth_enabled:
             config.enable_stream(rs.stream.depth, self.width, self.height,
                                  rs.format.z16, int(self.fps))
+        if self.infrared:
+            for index in (1, 2):
+                config.enable_stream(rs.stream.infrared, index, self.width, self.height,
+                                     rs.format.y8, int(self.fps))
         self._pipeline = rs.pipeline()
         profile = self._pipeline.start(config)
         self._apply_color_options(rs, profile.get_device().first_color_sensor())
@@ -60,10 +69,40 @@ class RealSenseCamera(ThreadedCamera):
                                     [0.0, color.fy, color.ppy],
                                     [0.0, 0.0, 1.0]])
         self.distortion = np.asarray(color.coeffs, dtype=float)[:5]
+        if self.infrared:
+            self.ir_calibration = self._ir_calibration(rs, profile)
         self._stop.clear()
         self._start_worker()
         self._opened = True
         return self
+
+    @staticmethod
+    def _ir_calibration(rs, profile):
+        left = profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile()
+        right = profile.get_stream(rs.stream.infrared, 2).as_video_stream_profile()
+        color = profile.get_stream(rs.stream.color)
+
+        def matrix(intr):
+            return np.array([[intr.fx, 0., intr.ppx], [0., intr.fy, intr.ppy], [0., 0., 1.]])
+
+        def transform(extrinsics):
+            T = np.eye(4)
+            T[:3, :3] = np.asarray(extrinsics.rotation, float).reshape(3, 3).T  # column-major
+            T[:3, 3] = extrinsics.translation
+            return T
+
+        T_right_left = transform(left.get_extrinsics_to(right))
+        return {'K_left': matrix(left.get_intrinsics()), 'K_right': matrix(right.get_intrinsics()),
+                'baseline_m': float(abs(T_right_left[0, 3])),
+                'T_color_left': transform(left.get_extrinsics_to(color))}
+
+    def stereo_pair(self):
+        """Latest ``(left, right, ir_calibration)`` uint8 IR images, or ``None``."""
+        with self._lock:
+            pair = self._ir_pair
+        if pair is None:
+            return None
+        return pair[0].copy(), pair[1].copy(), dict(self.ir_calibration)
 
     def _apply_color_options(self, rs, sensor):
         if self.exposure_ms is not None:
@@ -81,6 +120,13 @@ class RealSenseCamera(ThreadedCamera):
                 self.error = str(exc)
                 time.sleep(0.05)
                 continue
+            if self.infrared:
+                left, right = frames.get_infrared_frame(1), frames.get_infrared_frame(2)
+                if left and right:
+                    pair = (np.asanyarray(left.get_data()).copy(),
+                            np.asanyarray(right.get_data()).copy())
+                    with self._lock:
+                        self._ir_pair = pair
             if self._align is not None:
                 frames = self._align.process(frames)
             color = frames.get_color_frame()
@@ -96,7 +142,8 @@ class RealSenseCamera(ThreadedCamera):
                 depth_frame = frames.get_depth_frame()
                 if depth_frame:
                     depth = np.asanyarray(depth_frame.get_data()).copy()
-                    depth_meta = {'hw_time_ms': float(depth_frame.get_timestamp()),
+                    depth_meta = {'depth_scale': self.depth_scale,
+                                  'hw_time_ms': float(depth_frame.get_timestamp()),
                                   'time_domain': int(depth_frame.get_frame_timestamp_domain()),
                                   'frame_number': int(depth_frame.get_frame_number())}
             self.error = ''

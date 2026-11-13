@@ -209,6 +209,89 @@ class AnyGraspClient(_HttpToolClient):
                                scores, widths, frame.received_at)
 
 
+@dataclass(frozen=True)
+class StereoDepth:
+    """Metric z-depth in the LEFT IR camera (0 = invalid) at the inference size."""
+
+    depth: np.ndarray
+    intrinsics: np.ndarray       # left IR K scaled to ``depth``
+    seconds: float
+    model_ref: str
+
+
+class StereoDepthClient(_HttpToolClient):
+    """On-demand stereo depth (Fast-FoundationStereo service) from a D435 IR pair.
+
+    Not for the real-time safety loop (~0.4 s per pair). Use ``register_depth``
+    to move the result into the colour camera.
+    """
+
+    def health(self) -> dict:
+        response = self._request('/health')
+        return {'reachable': True,
+                'ready': response.get('status') == 'ok' and response.get('model_loaded') is True,
+                'model_loaded': response.get('model_loaded'),
+                'model_ref': response.get('model_ref'), 'process_owner': 'external'}
+
+    def depth(self, left: np.ndarray, right: np.ndarray, K_left, *, baseline_m: float,
+              ppx_right: float | None = None, width: int = 640) -> StereoDepth:
+        left, right = np.asarray(left), np.asarray(right)
+        if left.dtype != np.uint8 or left.shape != right.shape or right.dtype != np.uint8:
+            raise ValueError('expected two uint8 images of the same shape')
+        K_left = np.asarray(K_left, dtype=float)
+        if not (math.isfinite(baseline_m) and 0 < baseline_m < 1 and 32 <= width <= 2048):
+            raise ValueError('invalid baseline or width')
+
+        def encode(image):
+            buffer = io.BytesIO()
+            np.save(buffer, image, allow_pickle=False)
+            return base64.b64encode(buffer.getvalue()).decode('ascii')
+
+        response = self._request('/depth', {
+            'left': encode(left), 'right': encode(right), 'fx': float(K_left[0, 0]),
+            'baseline_m': float(baseline_m), 'ppx_left': float(K_left[0, 2]),
+            'ppx_right': float(K_left[0, 2] if ppx_right is None else ppx_right),
+            'width': int(width)})
+        try:
+            shape = tuple(int(v) for v in response['shape'])
+            depth = _decode_array(response['depth'], shape)
+            scale = float(response['scale'])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ExternalToolError(f'invalid stereo depth response: {exc}') from exc
+        K = K_left.copy()
+        K[:2] *= scale
+        return StereoDepth(depth.astype(np.float32), K, float(response.get('seconds', 0.)),
+                           str(response.get('model_ref', '')))
+
+
+def register_depth(depth, K_depth, K_color, T_color_depth, color_shape, max_depth_m=6.0):
+    """Z-depth from one camera into another (e.g. IR-left -> colour), z-buffered.
+
+    Each depth pixel is splatted over 2x2 target pixels so a lower-resolution source
+    leaves no grid of holes; 0 marks pixels without data.
+    """
+    depth = np.nan_to_num(np.asarray(depth, float), nan=0.)
+    K_depth, K_color = np.asarray(K_depth, float), np.asarray(K_color, float)
+    T = np.asarray(T_color_depth, float)
+    v, u = np.nonzero((depth > 0) & (depth < max_depth_m))
+    z = depth[v, u]
+    points = np.stack([(u - K_depth[0, 2]) * z / K_depth[0, 0],
+                       (v - K_depth[1, 2]) * z / K_depth[1, 1], z], 1) @ T[:3, :3].T + T[:3, 3]
+    front = points[:, 2] > 1e-3
+    points = points[front]
+    uc = np.rint(K_color[0, 0] * points[:, 0] / points[:, 2] + K_color[0, 2]).astype(int)
+    vc = np.rint(K_color[1, 1] * points[:, 1] / points[:, 2] + K_color[1, 2]).astype(int)
+    h, w = color_shape[:2]
+    out = np.full((h, w), np.inf)
+    for du in (0, 1):
+        for dv in (0, 1):
+            uu, vv = uc + du, vc + dv
+            ok = (uu >= 0) & (uu < w) & (vv >= 0) & (vv < h)
+            np.minimum.at(out, (vv[ok], uu[ok]), points[ok, 2])
+    out[~np.isfinite(out)] = 0.
+    return out.astype(np.float32)
+
+
 @dataclass
 class TrackingSession:
     name: str

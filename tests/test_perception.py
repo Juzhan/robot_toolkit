@@ -237,3 +237,40 @@ def test_stationary_registration_requires_independent_synchronized_views():
     with pytest.raises(ValueError, match='disagree'):
         register_stationary_views(reference, [(frame, mask), (replace(second, T_world_camera=shifted), mask)],
                                   initial_world_pose=np.eye(4), agreement_m=.0001)
+
+def test_stereo_depth_client_and_registration(monkeypatch):
+    import base64
+    import io
+    from robot_toolkit.external_tools import ToolRuntime
+    from robot_toolkit.perception import StereoDepthClient, register_depth
+
+    sent = {}
+
+    def fake(self, path, payload=None):
+        if payload is None:
+            return {'status': 'ok', 'model_loaded': True, 'model_ref': 'abc'}
+        sent.update(payload)
+        buffer = io.BytesIO()
+        np.save(buffer, np.full((24, 32), .5, np.float32), allow_pickle=False)
+        return {'depth': base64.b64encode(buffer.getvalue()).decode(), 'shape': [24, 32],
+                'scale': .5, 'seconds': .1, 'model_ref': 'abc'}
+
+    monkeypatch.setattr(StereoDepthClient, '_request', fake)
+    client = StereoDepthClient(ToolRuntime('fast_foundationstereo', root='/tmp/tools-test',
+                                           endpoint='http://127.0.0.1:6790', enabled=True))
+    assert client.health()['ready']
+    K = np.array([[100., 0, 32], [0, 100., 24], [0, 0, 1]])
+    image = np.zeros((48, 64), np.uint8)
+    result = client.depth(image, image, K, baseline_m=.05, width=32)
+    assert result.depth.shape == (24, 32) and sent['width'] == 32 and sent['fx'] == 100.
+    np.testing.assert_allclose(result.intrinsics[:2], K[:2] * .5)
+    with pytest.raises(ValueError):
+        client.depth(image, image.astype(np.float32), K, baseline_m=.05)
+    # Registration: identity keeps depth; a 1 cm shift moves pixels by fx * 0.01 / z.
+    depth = np.full((48, 64), .5, np.float32)
+    same = register_depth(depth, K, K, np.eye(4), (48, 64))
+    np.testing.assert_allclose(same[5:-5, 5:-5], .5)
+    T = np.eye(4)
+    T[0, 3] = .01
+    shifted = register_depth(depth, K, K, T, (48, 64))
+    assert (shifted[:, :2] == 0).all() and shifted[10, 10] == pytest.approx(.5)

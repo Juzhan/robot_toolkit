@@ -145,6 +145,13 @@ class ExternalTools:
 
         return AnyGraspClient(self.runtime('anygrasp'))
 
+    def stereo_depth(self, name: str = 'fast_foundationstereo'):
+        from .perception import StereoDepthClient
+
+        if self.definitions[name].adapter != 'stereo_depth_http':
+            raise ValueError(f'{name} has no stereo depth adapter')
+        return StereoDepthClient(self.runtime(name))
+
     def bundlesdf(self):
         from .perception import BundleSdfClient
 
@@ -320,7 +327,8 @@ def main(argv=None) -> int:
         elif args.action == 'health':
             if args.tool is None:
                 parser.error('health requires a tool name')
-            factories = {'sam3': tools.sam3, 'bundlesdf': tools.bundlesdf, 'anygrasp': tools.anygrasp}
+            factories = {'sam3': tools.sam3, 'bundlesdf': tools.bundlesdf, 'anygrasp': tools.anygrasp,
+                         'fast_foundationstereo': tools.stereo_depth}
             if args.tool not in factories:
                 raise ValueError(f'{args.tool} has no implemented health protocol')
             result = factories[args.tool]().health()

@@ -35,6 +35,7 @@ class UrdfChain:
     """Forward kinematics of every link reachable through revolute/fixed joints."""
 
     def __init__(self, urdf_path, base_link='base_link', joint_names=None):
+        self.urdf_path = Path(urdf_path)
         root = ET.parse(str(urdf_path)).getroot()
         children = {}
         for joint in root.findall('joint'):
@@ -402,3 +403,42 @@ def d435_spheres(link_camera, sphere_radius=0.02):
     link_camera = np.asarray(link_camera, float)
     center = link_camera[:3, :3] @ [0., 0., -.0125] + link_camera[:3, 3]
     return box_spheres(center, (.14, .035, .03), sphere_radius, link_camera[:3, :3])
+
+
+def self_collision_ignore(robot: SphereRobot, lower, upper, samples=2000, seed=0):
+    """Link pairs a self-collision check should skip (MoveIt-style classification).
+
+    Adjacent links (one joint apart, including through fixed joints), pairs that
+    touch at the joint-range midpoint and pairs touching in >= 95% of uniformly
+    sampled configurations (sphere over-approximation) are skipped. Returns
+    ``{link: [link, ...]}`` with each pair listed once.
+    """
+    chain = robot.chain
+    parent = {joint['child']: joint['parent'] for joint in chain.joints}
+    fixed_child = {joint['child'] for joint in chain.joints if joint['fixed']}
+
+    def body(link):  # links welded together by fixed joints form one rigid body
+        while link in fixed_child:
+            link = parent[link]
+        return link
+
+    links = sorted(set(map(str, robot.links)), key=chain.links.index)
+    pairs = [(a, b) for i, a in enumerate(links) for b in links[i + 1:]]
+    rng = np.random.default_rng(seed)
+    lower, upper = np.asarray(lower, float), np.asarray(upper, float)
+    qs = np.vstack([(lower + upper) / 2, rng.uniform(lower, upper, (samples, len(lower)))])
+    centers = robot.spheres_batch(qs)
+    touching = {}
+    for a, b in pairs:
+        ia, ib = np.flatnonzero(robot.links == a), np.flatnonzero(robot.links == b)
+        gap = (np.linalg.norm(centers[:, ia, None] - centers[:, None, ib], axis=-1)
+               - robot.radii[ia, None] - robot.radii[None, ib]).min(axis=(1, 2))
+        touching[a, b] = gap < 0
+    ignore = {}
+    for a, b in pairs:
+        body_a, body_b = body(a), body(b)
+        adjacent = (body_a == body_b or parent.get(body_a) and body(parent[body_a]) == body_b
+                    or parent.get(body_b) and body(parent[body_b]) == body_a)
+        if adjacent or touching[a, b][0] or touching[a, b][1:].mean() >= .95:
+            ignore.setdefault(a, []).append(b)
+    return ignore

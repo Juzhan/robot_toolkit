@@ -33,14 +33,16 @@ def test_depth_to_points_round_trip():
     np.testing.assert_allclose(points[0], [(1 - 3) / 100, (0 - 2) / 100, 1.])
 
 
-def test_robot_pixel_mask_keeps_objects_in_front_of_the_arm():
-    depth = np.full((240, 320), 1.)
+def test_robot_pixel_mask_removes_only_points_on_the_robot():
     sphere = [[0., 0., .5]]
+    depth = np.full((240, 320), 1.)                   # background behind the sphere: kept
+    assert not robot_pixel_mask(depth, K, sphere, [.1]).any()
+    depth[118:123, 158:163] = .45                     # the arm's own surface: removed
     mask = robot_pixel_mask(depth, K, sphere, [.1])
-    assert mask[120, 160] and not mask[0, 0]          # behind the sphere: hidden
-    depth[118:123, 158:163] = .2                     # a real object between camera and arm
-    assert not robot_pixel_mask(depth, K, sphere, [.1])[120, 160]
-    assert not robot_pixel_mask(depth, K, [[0., 0., .01]], [.05]).any()   # camera's own body
+    assert mask[120, 160] and mask.sum() == 25
+    depth[118:123, 158:163] = .2                      # an object in front of the arm: kept
+    assert not robot_pixel_mask(depth, K, sphere, [.1]).any()
+    assert not robot_pixel_mask(np.full((240, 320), .02), K, [[0., 0., .01]], [.05]).any()
 
 
 def test_distance_grid_is_a_lower_bound():
@@ -62,9 +64,17 @@ def test_numpy_map_matches_a_seen_table_and_filters_the_gripper():
     # Pretend the gripper is in view: sphere pixels in front of the table.
     centers = (guard.robot.spheres(START) - T[:3, 3]) @ T[:3, :3]
     radii = guard.robot.radii - guard.robot.padding_m
-    own = robot_pixel_mask(np.full(depth.shape, 5.), K, centers, radii)
+    # Pretend the gripper is seen: pixels at the sphere centres' depth along their rays.
+    v, u = np.mgrid[0:depth.shape[0], 0:depth.shape[1]]
+    rays = np.stack([(u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1], np.ones(depth.shape)], -1)
+    for center, radius in zip(centers, radii):
+        if center[2] <= .02:
+            continue
+        hit = (np.linalg.norm(np.cross(rays, center), axis=-1) / np.linalg.norm(rays, axis=-1)
+               < radius * .5)
+        depth[hit] = np.minimum(depth[hit], center[2])
+    own = robot_pixel_mask(depth, K, centers, radii)
     assert own.any()
-    depth[own] = np.minimum(depth[own], .15)          # gripper surface, closer than the table
     depth_map.update(depth, K, START, stamp=0.)
     # Compare the hand only: the camera cannot see the table under the upper arm.
     hand = {'ignore_links': ['base_link', 'link1', 'link2', 'link3', 'link4', 'link5']}
@@ -127,3 +137,53 @@ def test_simulated_depth_avoidance_stops_before_the_box():
     assert blocked['blocked_frames'] > 0 and blocked['closest_true_clearance_m'] > .02
     free = run('numpy', (-.05, 0., .05), seconds=2., verbose=False)
     assert free['blocked_frames'] == 0 and free['tcp_short_of_goal_m'] < .005
+
+
+def test_column_prior_and_heightmap_check():
+    guard, depth_map = make_map()
+    T = depth_map.camera_pose(START)
+    depth_map.update(plane_depth(T, .0), K, START, stamp=0.)
+    seen_xy = depth_map.points[:, :2]
+    depth_map.points = np.vstack([depth_map.points, [[seen_xy[0, 0], seen_xy[0, 1], .1]]])
+    columns = depth_map.column_points()
+    assert (np.abs(columns[:, :2] - seen_xy[0]).max(axis=1) < 1e-9).sum() >= 9  # 0.1 m tall
+    check = depth_map.heightmap_check(START)
+    assert check(np.array([START, START])) is None                 # the arm's own spot
+    far = START + [2.2, 0, 0, 0, 0, 0]                                 # swung over unseen table
+    assert 'unobserved' in check(np.array([START, far])) and check.spot is not None
+    assert len(depth_map.unknown_columns(START, [-.5, -.5], [.5, .5])) > 0
+
+
+def test_self_collision_ignore_keeps_distant_pairs():
+    from robot_toolkit.core.collision import self_collision_ignore
+    guard, _ = make_map()
+    lower = [-2.618, 0., -2.967, -1.571, -1.571, -2.094]
+    upper = [2.618, 3.1416, 0., 1.571, 1.571, 2.094]
+    ignore = self_collision_ignore(guard.robot, lower, upper, samples=300)
+    pairs = {(a, b) for a, items in ignore.items() for b in items}
+    assert ('link1', 'link2') in pairs and ('link6', 'gripper_base') in pairs   # adjacent
+    assert ('link2', 'gripper_base') not in pairs and ('base_link', 'gripper_base') not in pairs
+
+
+@pytest.mark.skipif(not os.environ.get('ROBOKIT_CUDA_TESTS'),
+                    reason='set ROBOKIT_CUDA_TESTS=1 (robokit + CUDA) to run the planner')
+def test_robokit_planner_goes_around_a_box():
+    pytest.importorskip('robokit')
+    from robot_toolkit.adapters.robokit_planner import RobokitPlanner
+    from robot_toolkit.examples.sim_depth_avoidance import position_ik
+
+    guard = CollisionGuard.from_config({'obstacles': [
+        {'type': 'plane', 'point': [0, 0, 0], 'normal': [0, 0, 1], 'ignore_links': ['link1']},
+        {'type': 'box', 'center': [.30, -.05, .09], 'size': [.1, .1, .18]}]},
+        attached={'link6': d435_spheres(LINK_CAMERA)})
+    chain = guard.robot.chain
+    tcp = chain.link_poses(START)['link6'][:3, 3]
+    start = position_ik(chain, START, tcp + [0, .12, -.12])
+    goal = position_ik(chain, START, tcp + [0, -.30, -.12])
+    assert guard.safe_fraction(start, goal, .015) < .5                # straight line is blocked
+    lower = [-2.618, 0., -2.967, -1.571, -1.571, -2.094]
+    upper = [2.618, 3.1416, 0., 1.571, 1.571, 2.094]
+    samples = RobokitPlanner(guard, lower, upper).plan(start, goal)
+    np.testing.assert_allclose(samples[0], start, atol=1e-6)
+    np.testing.assert_allclose(samples[-1], goal, atol=.01)
+    assert guard.clearances(samples).min() >= guard.margin_m
