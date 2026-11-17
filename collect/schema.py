@@ -76,6 +76,9 @@ class DatasetSchema:
     # ``pos`` follows the LeRobot motor naming used by most public datasets
     # (joint_1.pos ... gripper.pos).  Labels only: values and order are identical.
     name_style: str = 'unit'
+    # False records cameras only (human demonstration video); no robot state
+    # or action columns are written, so ``robot`` is metadata only.
+    include_state_action: bool = True
 
     def __post_init__(self):
         self.cameras = tuple(self.cameras)
@@ -84,23 +87,27 @@ class DatasetSchema:
         if self.name_style not in _NAME_STYLES:
             raise DatasetError(f'name_style must be one of {_NAME_STYLES}, '
                                f'got {self.name_style!r}')
+        if not self.include_state_action:
+            if not self.cameras:
+                raise DatasetError('a vision-only schema needs at least one camera')
+            self.require_images = True
         # A schema with no cameras can only record robot state/action.  Do not
         # require image keys that no camera can provide.
-        if not self.cameras:
+        elif not self.cameras:
             self.require_images = False
 
     # ------------------------------------------------------------------ names
     @property
     def state_names(self) -> list[str]:
-        return _styled_names(self.robot, self.name_style)
+        return _styled_names(self.robot, self.name_style) if self.include_state_action else []
 
     @property
     def action_names(self) -> list[str]:
-        return _styled_names(self.robot, self.name_style)
+        return _styled_names(self.robot, self.name_style) if self.include_state_action else []
 
     @property
     def dim(self) -> int:
-        return self.robot.dim
+        return self.robot.dim if self.include_state_action else 0
 
     @property
     def camera_names(self) -> list[str]:
@@ -122,11 +129,14 @@ class DatasetSchema:
 
     # --------------------------------------------------------------- lerobot
     def features(self) -> dict:
-        state = {'dtype': 'float32', 'shape': (self.dim,), 'names': self.state_names}
-        features = {
-            'observation.state': dict(state),
-            'action': dict(state),
-        }
+        features = {}
+        if self.include_state_action:
+            state = {'dtype': 'float32', 'shape': (self.dim,),
+                     'names': self.state_names}
+            features = {
+                'observation.state': dict(state),
+                'action': dict(state),
+            }
         if self.include_time:
             features[self.time_name] = {'dtype': 'float64', 'shape': (1,),
                                         'names': ['seconds']}
@@ -140,21 +150,24 @@ class DatasetSchema:
 
     # ------------------------------------------------------------------ frame
     def observation(self, joints, gripper_width=None) -> np.ndarray:
+        if not self.include_state_action:
+            return np.zeros(0, dtype=np.float32)
         return np.asarray(self.robot.pack(joints, gripper_width), dtype=np.float32)
 
-    def frame(self, observation_state, action, images=None, task: str = '',
+    def frame(self, observation_state=None, action=None, images=None, task: str = '',
               time_s: float | None = None, extra: dict | None = None) -> dict:
-        state = np.asarray(observation_state, dtype=np.float32).reshape(-1)
-        action_array = np.asarray(action, dtype=np.float32).reshape(-1)
-        if state.size != self.dim:
-            raise DatasetError(f'observation.state has {state.size} values, expected {self.dim}')
-        if action_array.size != self.dim:
-            raise DatasetError(f'action has {action_array.size} values, expected {self.dim}')
-        frame = {
-            'observation.state': state,
-            'action': action_array,
-            'task': str(task),
-        }
+        frame = {'task': str(task)}
+        if self.include_state_action:
+            state = np.asarray(observation_state, dtype=np.float32).reshape(-1)
+            action_array = np.asarray(action, dtype=np.float32).reshape(-1)
+            if state.size != self.dim:
+                raise DatasetError(
+                    f'observation.state has {state.size} values, expected {self.dim}')
+            if action_array.size != self.dim:
+                raise DatasetError(
+                    f'action has {action_array.size} values, expected {self.dim}')
+            frame['observation.state'] = state
+            frame['action'] = action_array
         if self.include_time and time_s is not None:
             frame[self.time_name] = np.array([float(time_s)], dtype=np.float64)
         for camera in self.cameras:
@@ -173,14 +186,15 @@ class DatasetSchema:
         return frame
 
     def validate(self, frame: dict) -> None:
-        for key in ('observation.state', 'action'):
-            if key not in frame:
-                raise DatasetError(f'missing {key}')
-            value = np.asarray(frame[key])
-            if value.shape != (self.dim,):
-                raise DatasetError(f'{key} has shape {value.shape}, expected {(self.dim,)}')
-            if not np.all(np.isfinite(value)):
-                raise DatasetError(f'{key} contains non-finite values')
+        if self.include_state_action:
+            for key in ('observation.state', 'action'):
+                if key not in frame:
+                    raise DatasetError(f'missing {key}')
+                value = np.asarray(frame[key])
+                if value.shape != (self.dim,):
+                    raise DatasetError(f'{key} has shape {value.shape}, expected {(self.dim,)}')
+                if not np.all(np.isfinite(value)):
+                    raise DatasetError(f'{key} contains non-finite values')
         for camera in self.cameras:
             key = f'observation.images.{camera.name}'
             if key not in frame:
@@ -191,18 +205,21 @@ class DatasetSchema:
 
     def contract(self) -> dict:
         """Machine-readable description written next to every dataset."""
-        return {
+        contract = {
             'toolkit': 'robot_toolkit',
             'fps': self.fps,
+            'repo_id': self.repo_id,
             'robot': self.robot.name,
             'robot_type': self.robot_type,
-            'state_action': {
+            'modalities': (['state_action', 'cameras'] if self.include_state_action
+                           else ['cameras']),
+            'state_action': ({
                 'names': self.state_names,
                 'units': [self.robot.joint_units] * self.robot.dof +
                          ([] if self.robot.gripper is None else [self.robot.gripper.unit]),
                 'action': 'absolute joint targets plus absolute gripper opening',
                 'dim': self.dim,
-            },
+            } if self.include_state_action else None),
             'cameras': [camera.to_dict() for camera in self.cameras],
             'depth': DEPTH_ENCODING,
             'extrinsics': EXTRINSIC_CONVENTION,
@@ -210,6 +227,7 @@ class DatasetSchema:
             'alignment': ('observation at t, action computed from the same control '
                           'sample and applied after that observation'),
         }
+        return contract
 
     # ------------------------------------------------------------------ io
     def to_dict(self) -> dict:
@@ -218,7 +236,8 @@ class DatasetSchema:
                 'fps': self.fps, 'image_feature_dtype': self.image_feature_dtype,
                 'include_time': self.include_time, 'time_name': self.time_name,
                 'robot_type': self.robot_type, 'repo_id': self.repo_id,
-                'require_images': self.require_images}
+                'require_images': self.require_images,
+                'include_state_action': self.include_state_action}
 
     @classmethod
     def from_dict(cls, data: dict) -> 'DatasetSchema':
@@ -234,4 +253,5 @@ class DatasetSchema:
                    time_name=data.get('time_name', 'observation.sim_time'),
                    robot_type=data.get('robot_type', ''),
                    repo_id=data.get('repo_id', 'local/robot_toolkit'),
-                   require_images=bool(data.get('require_images', bool(cameras))))
+                   require_images=bool(data.get('require_images', bool(cameras))),
+                   include_state_action=bool(data.get('include_state_action', True)))

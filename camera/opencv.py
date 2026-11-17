@@ -19,9 +19,19 @@ class OpenCVCamera(ThreadedCamera):
 
     def open(self):
         import cv2
-        backend = cv2.CAP_DSHOW if sys.platform == 'win32' else cv2.CAP_ANY
-        capture = cv2.VideoCapture(self.index, backend)
-        if not capture.isOpened():
+        # OpenCV 5.x ships builds where DSHOW is advertised but cannot open a
+        # device by index, while MSMF works.  Try the platform-preferred
+        # backend first and fall back instead of failing the whole capture.
+        backends = ([cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+                    if sys.platform == 'win32' else [cv2.CAP_ANY])
+        capture = None
+        for backend in backends:
+            candidate = cv2.VideoCapture(self.index, backend)
+            if candidate.isOpened():
+                capture = candidate
+                break
+            candidate.release()
+        if capture is None:
             raise RuntimeError(f'无法打开 OpenCV 相机 {self.index}（{self.name}）')
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)

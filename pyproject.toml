@@ -29,6 +29,7 @@ dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
 control = ["ruckig>=0.12"]
+voice = ["comtypes>=1.2 ; sys_platform == 'win32'"]
 piper = [
     "python-can>=4.0",
     "pyAgxArm @ git+https://github.com/agilexrobotics/pyAgxArm.git",
@@ -54,4 +55,4 @@ packages = [
 
 [tool.setuptools.package-data]
 # Demo task configs ship with the package so `run.bat <demo>` works after install.
-robot_toolkit = ["configs/tasks/*.json"]
+robot_toolkit = ["configs/tasks/*.json", "assets/audio/*.wav"]

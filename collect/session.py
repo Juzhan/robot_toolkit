@@ -96,6 +96,9 @@ class EpisodeCollector:
         """
         if not self._started:
             return False
+        if not self.schema.include_state_action:
+            return self.capture_frame(timestamp=timestamp, extra=extra,
+                                      strict_cameras=strict_cameras)
         now = self.clock()
         if now - self._last_capture < self.min_interval_s:
             return True
@@ -125,6 +128,36 @@ class EpisodeCollector:
                                      depth=depth or None,
                                      extra=extra,
                                      timestamp=timestamp if timestamp is not None else now)
+
+    def capture_frame(self, timestamp: float | None = None, extra: dict | None = None,
+                      strict_cameras: bool = True, frame_hook=None) -> bool:
+        """Capture only the camera frames (vision-only schemas).
+
+        No robot is read and no state/action vector is written; this is the
+        modality used by human-demonstration collection.  ``frame_hook`` gets
+        ``(timestamp, images)`` and may return extra per-frame arrays (e.g. a
+        future hand-tracking channel).
+        """
+        if not self._started:
+            return False
+        now = self.clock()
+        if now - self._last_capture < self.min_interval_s:
+            return True
+        images, depth = self._camera_payload(strict=strict_cameras)
+        relative_t = timestamp if timestamp is not None else now
+        if frame_hook is not None:
+            try:
+                hook_extra = frame_hook(relative_t, images)
+            except Exception:
+                hook_extra = None
+            if hook_extra:
+                extra = {**(extra or {}), **hook_extra}
+        self._last_capture = now
+        return self.recorder.capture(None, None,
+                                     images=images or None,
+                                     depth=depth or None,
+                                     extra=extra,
+                                     timestamp=relative_t)
 
     def capture_vectors(self, observation, action, timestamp: float | None = None,
                         extra: dict | None = None, strict_cameras: bool = True) -> bool:
@@ -184,13 +217,24 @@ class EpisodeCollector:
     def stop(self, success: bool | None = None) -> None:
         if not self._started:
             return
-        self.recorder.save(success=success)
+        # Reset first: a failed save must not leave the collector thinking an
+        # episode is still active, otherwise close() tries to save it again.
         self._started = False
+        try:
+            self.recorder.save(success=success)
+        except Exception:
+            try:
+                if self.recorder.phase in ('recording', 'error'):
+                    self.recorder.discard()
+            except Exception:
+                pass
+            raise
 
     def discard(self) -> None:
-        if self._started:
-            self.recorder.discard()
-            self._started = False
+        if not self._started:
+            return
+        self._started = False
+        self.recorder.discard()
 
     def close(self, wait_export: bool = True, timeout: float = 60.0) -> None:
         self.recorder.close(wait_export=wait_export, timeout=timeout)

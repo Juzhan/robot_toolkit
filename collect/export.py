@@ -143,31 +143,38 @@ def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
             if hasattr(LeRobotDataset, 'resume'):
                 # LeRobot >= 0.5 opens existing datasets read-only; resume()
                 # returns a writer that can append another episode.
-                dataset = LeRobotDataset.resume(
-                    repo_id, **_filter_kwargs(LeRobotDataset.resume, root=stage,
-                                              video_backend=video_backend))
+                kwargs = {'root': stage, 'video_backend': video_backend}
+                if 'rgb_encoder' in inspect.signature(LeRobotDataset.resume).parameters:
+                    from lerobot.configs.video import RGBEncoderConfig
+                    kwargs['rgb_encoder'] = RGBEncoderConfig(vcodec='h264')
+                dataset = LeRobotDataset.resume(repo_id, **kwargs)
             else:
                 dataset = LeRobotDataset(repo_id, root=stage,
                                          video_backend=video_backend)
             dataset.vcodec = 'h264'
         else:
+            kwargs = {'fps': schema.fps, 'features': features, 'root': stage,
+                      'robot_type': schema.robot_type,
+                      'video_backend': video_backend}
+            if 'rgb_encoder' in inspect.signature(LeRobotDataset.create).parameters:
+                from lerobot.configs.video import RGBEncoderConfig
+                kwargs['rgb_encoder'] = RGBEncoderConfig(vcodec='h264')
+            else:
+                kwargs['vcodec'] = 'h264'
             dataset = LeRobotDataset.create(
                 repo_id,
-                **_filter_kwargs(LeRobotDataset.create, fps=schema.fps,
-                                 features=features, root=stage,
-                                 robot_type=schema.robot_type,
-                                 video_backend=video_backend, vcodec='h264'))
+                **_filter_kwargs(LeRobotDataset.create, **kwargs))
         episode = dataset.num_episodes
         depth_dir = stage / 'depth' / f'episode_{episode:06d}'
         depth_dir.mkdir(parents=True, exist_ok=True)
         task = meta.get('task', '')
         for index, file in enumerate(files):
             with np.load(file, allow_pickle=False) as raw:
-                frame = {
-                    'observation.state': np.asarray(raw['observation_state'], dtype=np.float32),
-                    'action': np.asarray(raw['action'], dtype=np.float32),
-                    'task': task,
-                }
+                frame = {'task': task}
+                if schema.include_state_action:
+                    frame['observation.state'] = np.asarray(
+                        raw['observation_state'], dtype=np.float32)
+                    frame['action'] = np.asarray(raw['action'], dtype=np.float32)
                 if schema.include_time:
                     value = float(raw['timestamp'][0]) if 'timestamp' in raw else index / schema.fps
                     frame[schema.time_name] = np.array([value], dtype=np.float64)
@@ -202,7 +209,8 @@ def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
             check = LeRobotDataset(repo_id, root=stage, video_backend=video_backend)
             for index in (len(check) - len(files), len(check) - 1):
                 sample = check[index]
-                if tuple(sample['action'].shape) != (schema.dim,):
+                if (schema.include_state_action
+                        and tuple(sample['action'].shape) != (schema.dim,)):
                     raise DatasetError('exported action shape is wrong')
                 for camera in schema.cameras:
                     key = f'observation.images.{camera.name}'
@@ -227,6 +235,77 @@ def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
 def exporter_for(name: str):
     """Map a config value to the LeRobot writer or the manifest fallback."""
     return export_manifest if str(name).strip().lower() == 'manifest' else export_lerobot
+
+
+def _dataset_repo_id(root: Path, fallback: str = 'local/robot_toolkit') -> str:
+    try:
+        contract = json.loads((root / 'meta' / 'capture_contract.json')
+                              .read_text(encoding='utf-8'))
+        return str(contract.get('repo_id') or fallback)
+    except Exception:
+        return fallback
+
+
+def delete_last_episode(dataset_root) -> dict | None:
+    """Delete the newest episode of an existing LeRobot dataset.
+
+    Uses LeRobot's own ``delete_episodes`` tool; manifests (no ``meta/info.json``)
+    have nothing to delete and return ``None``.
+    """
+    try:
+        from lerobot.datasets.dataset_tools import delete_episodes
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    except ImportError as exc:
+        raise ImportError('deleting a LeRobot episode requires `pip install lerobot`') from exc
+    root = Path(dataset_root)
+    if not (root / 'meta' / 'info.json').exists():
+        return None
+    info = json.loads((root / 'meta' / 'info.json').read_text(encoding='utf-8'))
+    total = int(info.get('total_episodes', 0) or 0)
+    if total <= 0:
+        return None
+    repo_id = _dataset_repo_id(root)
+    if total == 1:
+        # LeRobot cannot represent an empty dataset; keep the removed dataset
+        # next to the root, matching the exporter's backup behaviour.
+        backup = root.with_name(root.name + '_deleted_' + uuid.uuid4().hex[:6])
+        _rename_retry(root, backup)
+        return {'episode': 0, 'remaining': 0, 'backup': str(backup)}
+    last = total - 1
+    stage = root.with_name(f'dataset_staging_delete_{uuid.uuid4().hex[:6]}')
+    if stage.exists():
+        raise DatasetError(f'staging directory already exists: {stage}')
+    dataset = LeRobotDataset(repo_id, root=root, video_backend='pyav')
+    try:
+        delete_episodes(dataset, [last], output_dir=stage, repo_id=repo_id)
+    finally:
+        del dataset
+        gc.collect()
+    # Keep our custom sidecars that LeRobot does not know about.
+    contract = root / 'meta' / 'capture_contract.json'
+    if contract.exists():
+        shutil.copy2(contract, stage / 'meta' / 'capture_contract.json')
+    removed = f'episode_{last:06d}'
+    src_depth = root / 'depth'
+    if src_depth.exists():
+        dst_depth = stage / 'depth'
+        dst_depth.mkdir(parents=True, exist_ok=True)
+        for entry in src_depth.glob('episode_*'):
+            if entry.name != removed:
+                shutil.copytree(entry, dst_depth / entry.name, dirs_exist_ok=True)
+    src_stamps = root / 'timestamps'
+    if src_stamps.exists():
+        dst_stamps = stage / 'timestamps'
+        dst_stamps.mkdir(parents=True, exist_ok=True)
+        for entry in src_stamps.iterdir():
+            if entry.name.startswith(removed + '.'):
+                continue
+            if entry.is_file():
+                shutil.copy2(entry, dst_stamps / entry.name)
+            else:
+                shutil.copytree(entry, dst_stamps / entry.name, dirs_exist_ok=True)
+    _swap_dataset(stage, root)
+    return {'episode': last, 'remaining': total - 1}
 
 
 def export_manifest(take, dataset_root, schema: DatasetSchema | None = None) -> dict:
