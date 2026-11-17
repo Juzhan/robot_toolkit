@@ -22,13 +22,12 @@ from pathlib import Path
 
 import numpy as np
 
+from ..control.joint_planner import PlanningFailed  # noqa: F401  (one error type)
 from ..control.trajectory import TrajectoryLimits, retime
 from ..core.collision import Box, Plane, Sphere, self_collision_ignore
 from ..errors import SafetyViolation
 
 
-class PlanningFailed(RuntimeError):
-    pass
 
 
 class _Points:

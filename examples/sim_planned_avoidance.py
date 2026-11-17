@@ -25,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-from robot_toolkit.adapters.robokit_planner import PlanningFailed, RobokitPlanner
+from robot_toolkit.control.joint_planner import PlanningFailed, RRTConnectPlanner
 from robot_toolkit.core.collision import Box, CollisionGuard, Plane, d435_spheres
 from robot_toolkit.examples.sim_depth_avoidance import ROOT, START, SimCamera, position_ik
 from robot_toolkit.obstacle_map import DepthObstacleMap, KdPoints
@@ -38,14 +38,35 @@ TABLE = {'type': 'plane', 'name': 'table', 'point': [0, 0, 0], 'normal': [0, 0, 
 
 
 def link_camera():
-    calibration = ROOT.parent / 'outputs/robot_tasks/piper_calibrate_auto/calibration.json'
+    calibration = ROOT / 'configs/calibration/piper_x_wrist_d435.json'
     if calibration.exists():
         return np.array(json.loads(calibration.read_text())['cameras']['wrist_camera']['tcp_camera'])
     return np.array([[1., -.056, -.035, -.035], [.065, .935, .348, -.075],
                      [.013, -.35, .937, .015], [0., 0., 0., 1.]])
 
 
-def main(video=None, verbose=True):
+def make_plan(kind, guard, start, goal, checks=(), unknown=None):
+    """``kind``: 'rrt' (CPU, toolkit) or 'robokit' (GPU). ``unknown``: points only the
+    planner avoids (unobserved space)."""
+    if kind == 'robokit':
+        from robot_toolkit.adapters.robokit_planner import RobokitPlanner
+
+        planner = RobokitPlanner(guard, LOWER, UPPER)
+        samples = planner.plan(start, goal, checks=checks, avoid_points=unknown)
+    else:
+        planner = RRTConnectPlanner(guard, LOWER, UPPER)
+        extra = []
+        if unknown is not None and len(unknown):
+            # The wrist camera maps the hand's space; unobserved columns only block the
+            # hand (matching heightmap_check), not the upper arm passing high above.
+            unobserved = KdPoints(unknown, .01 * np.sqrt(3) / 2, 'unobserved')
+            unobserved.ignore_links = {'base_link', 'link1', 'link2', 'link3', 'link4'}
+            extra = [unobserved]
+        samples = planner.plan(start, goal, extra_obstacles=extra, checks=checks)
+    return samples, planner.last
+
+
+def main(video=None, verbose=True, planner_kind='rrt'):
     camera_mount = link_camera()
     attached = {'link6': d435_spheres(camera_mount)}
     truth = CollisionGuard.from_config({}, attached=attached)
@@ -81,9 +102,9 @@ def main(video=None, verbose=True):
     play('guard only (straight line)', guard, straight)
 
     # 2. Planned around the virtual box.
-    planner = RobokitPlanner(guard, LOWER, UPPER)
-    play('planned, known box', guard, planner.plan(start, goal))
-    results[-1].update(planner.last)
+    samples, info = make_plan(planner_kind, guard, start, goal)
+    play(f'{planner_kind}: planned, known box', guard, samples)
+    results[-1].update(info)
 
     # 3./4. The box only known from wrist depth. Unseen space is not assumed free: a
     # plan whose hand passes through it is refused until a scan has looked there.
@@ -105,16 +126,17 @@ def main(video=None, verbose=True):
                 looked += 1
         points = depth_map.column_points(floor_z=0.)   # tabletop 2.5-D prior
         seen.set_dynamic([KdPoints(points, .01 * np.sqrt(3), 'seen box')])
-        name = f'planned, box seen by depth ({label})'
+        name = f'{planner_kind}: planned, box seen by depth ({label})'
         try:
-            samples = RobokitPlanner(seen, LOWER, UPPER).plan(
-                start, goal, checks=[depth_map.heightmap_check(start)],
-                avoid_points=depth_map.unknown_columns(start, [0., -.5], [.6, .5]))
+            samples, info = make_plan(
+                planner_kind, seen, start, goal,
+                checks=[depth_map.heightmap_check(start)] if planner_kind == 'robokit' else (),
+                unknown=depth_map.unknown_columns(start, [0., -.5], [.6, .5], voxel=.01))
         except PlanningFailed as exc:
             results.append({'run': name, 'refused': str(exc)[:200], 'looks': looked})
             continue
         play(name, seen, samples, points)
-        results[-1].update(looks=looked, seen_points=len(points))
+        results[-1].update(info, looks=looked, seen_points=len(points))
 
     if verbose:
         for row in results:
@@ -175,4 +197,7 @@ def _frame(camera, q, points, goal, title, truth):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--video', type=Path, default=None)
-    main(parser.parse_args().video)
+    parser.add_argument('--planner', choices=['rrt', 'robokit'], default='rrt',
+                        help='rrt: CPU RRT-Connect on the guard; robokit: GPU trajectory optimiser')
+    args = parser.parse_args()
+    main(args.video, planner_kind=args.planner)

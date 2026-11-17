@@ -244,11 +244,25 @@ class DepthObstacleMap:
                                           <= robot.radii[None] + voxel).any(axis=1)
         return cells[~free]
 
+    def observed_cells(self):
+        """Table cells (``voxel`` grid, x/y) with an observed height. A cell missing only
+        between observed neighbours (a sampling gap, not an occlusion: >= 3 of its 4
+        neighbours observed) counts as observed."""
+        cells = {tuple(c) for c in np.floor(self.points[:, :2] / self.voxel).astype(int)}
+        holes = set()
+        for x, y in cells:
+            for cx, cy in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if (cx, cy) not in cells and sum(
+                        n in cells for n in ((cx + 1, cy), (cx - 1, cy),
+                                             (cx, cy + 1), (cx, cy - 1))) >= 3:
+                    holes.add((cx, cy))
+        return cells | holes
+
     def unknown_columns(self, q_start, lower_xy, upper_xy, height=.3, floor_z=0.0, voxel=.02):
         """Points filling every unobserved table cell in ``lower_xy..upper_xy`` up to
         ``height`` (except where the arm stands at ``q_start``): planner obstacles
         that keep proposals over observed table, matching ``heightmap_check``."""
-        observed = {tuple(c) for c in np.floor(self.points[:, :2] / self.voxel).astype(int)}
+        observed = self.observed_cells()
         robot = self.guard.robot
         start = robot.spheres(q_start)
         xs = np.arange(lower_xy[0], upper_xy[0], voxel)
@@ -274,7 +288,7 @@ class DepthObstacleMap:
         Returns ``check(samples) -> reason or None``."""
         robot = self.guard.robot
         hand = np.isin(robot.links, list(links))
-        observed = {tuple(cell) for cell in np.floor(self.points[:, :2] / self.voxel).astype(int)}
+        observed = self.observed_cells()
         start = robot.spheres(q_start)
         offsets = np.array([[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) * .7
 
