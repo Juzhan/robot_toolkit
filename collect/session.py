@@ -83,9 +83,16 @@ class EpisodeCollector:
         self._last_capture = -1e9
         return self.recorder.start(task, meta=meta)
 
-    def _camera_payload(self, strict: bool = True) -> tuple[dict, dict]:
+    @staticmethod
+    def _frame_ids(frames) -> dict:
+        """Identity of each camera frame (its publish time): rows that see the same
+        frame share one stored image (``EpisodeRecorder`` image references)."""
+        return {name: float(frame.t) for name, frame in frames.items()
+                if frame.rgb is not None and frame.t}
+
+    def _camera_payload(self, strict: bool = True) -> tuple[dict, dict, dict]:
         if self.hub is None:
-            return {}, {}
+            return {}, {}, {}
         frames = self.hub.snapshot(strict=strict)
         images, depth = {}, {}
         for name, frame in frames.items():
@@ -97,7 +104,7 @@ class EpisodeCollector:
                                       else frame.intrinsics)
                 depth[f'{name}_T_world_camera'] = (np.eye(4) if frame.T_world_camera is None
                                                    else frame.T_world_camera)
-        return images, depth
+        return images, depth, self._frame_ids(frames)
 
     def capture_state(self, state=None, action=None, timestamp: float | None = None,
                       extra: dict | None = None, strict_cameras: bool = True) -> bool:
@@ -155,15 +162,19 @@ class EpisodeCollector:
             width = state.extra.get('gripper_width')
         observation = self.schema.observation(state.q, width)
         action_vector = observation if action is None else np.asarray(action, dtype=np.float32)
-        images, depth = (split_camera_frames(synchronized['frames']) if synchronized is not None
-                 else self._camera_payload(strict=strict_cameras))
+        if synchronized is not None:
+            images, depth = split_camera_frames(synchronized['frames'])
+            image_ids = self._frame_ids(synchronized['frames'])
+        else:
+            images, depth, image_ids = self._camera_payload(strict=strict_cameras)
         self._last_capture = now
         self._last_state = state
         return self.recorder.capture(observation, action_vector,
                                      images=images or None,
                                      depth=depth or None,
                                      extra=extra,
-                                     timestamp=timestamp if timestamp is not None else now)
+                                     timestamp=timestamp if timestamp is not None else now,
+                                     image_ids=image_ids or None)
 
     def capture_vectors(self, observation, action, timestamp: float | None = None,
                         extra: dict | None = None, strict_cameras: bool = True) -> bool:
@@ -175,14 +186,15 @@ class EpisodeCollector:
         now = self.clock()
         if now - self._last_capture < self.min_interval_s:
             return True
-        images, depth = self._camera_payload(strict=strict_cameras)
+        images, depth, image_ids = self._camera_payload(strict=strict_cameras)
         self._last_capture = now
         return self.recorder.capture(np.asarray(observation, dtype=np.float32),
                                      np.asarray(action, dtype=np.float32),
                                      images=images or None,
                                      depth=depth or None,
                                      extra=extra,
-                                     timestamp=timestamp if timestamp is not None else now)
+                                     timestamp=timestamp if timestamp is not None else now,
+                                     image_ids=image_ids or None)
 
     def capture_trajectory(self, trajectory, success: bool | None = True,
                            task: str | None = None) -> int:

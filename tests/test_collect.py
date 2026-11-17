@@ -570,3 +570,88 @@ def test_schema_feature_name_styles():
 
     with pytest.raises(DatasetError):
         DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(), name_style='bogus')
+
+
+def _fake_lerobot(monkeypatch, store):
+    """A minimal LeRobotDataset that records add_frame calls (no video encoding)."""
+    import sys
+    import types
+
+    class Dataset:
+        def __init__(self, repo_id, root=None, **kwargs):
+            self.root, self.frames, self.num_episodes = Path(root), [], 0
+            store.append(self)
+
+        @classmethod
+        def create(cls, repo_id, **kwargs):
+            return cls(repo_id, root=kwargs['root'])
+
+        def add_frame(self, frame):
+            self.frames.append(frame)
+
+        def save_episode(self, **kwargs):
+            self.root.mkdir(parents=True, exist_ok=True)
+
+        def finalize(self):
+            pass
+
+        def __len__(self):
+            return len(self.frames)
+
+    module = types.ModuleType('lerobot.datasets.lerobot_dataset')
+    module.LeRobotDataset = Dataset
+    for name in ('lerobot', 'lerobot.datasets'):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.setitem(sys.modules, 'lerobot.datasets.lerobot_dataset', module)
+
+
+def test_fast_rows_store_each_camera_frame_once(tmp_path, monkeypatch):
+    # 100 Hz rows with a 30 fps camera: every image is spooled once, rows that
+    # show the same frame reference it, and the export still has one image per row.
+    schema = DatasetSchema(robot=RobotSpec.ur5e(), cameras=(CameraSpec('wrist_camera', 32, 24),),
+                           fps=100)
+    recorder = EpisodeRecorder(tmp_path, schema, export_mode='deferred', export=None)
+    recorder.start('fast rows')
+    for row in range(10):
+        frame_id = row // 3                       # a new camera frame every 3 rows
+        image = np.full((24, 32, 3), frame_id, dtype=np.uint8)
+        depth = {'wrist_camera': np.full((24, 32), 100 + frame_id, np.uint16),
+                 'wrist_camera_K': np.eye(3)}
+        assert recorder.capture(np.full(7, row), np.full(7, row), images={'wrist_camera': image},
+                                depth=depth, image_ids={'wrist_camera': frame_id})
+    take = recorder.take
+    recorder.save(success=True)
+    recorder.flush()
+    files = sorted(take.glob('0*.npz'))
+    stored = [index for index, file in enumerate(files)
+              if 'wrist_camera_rgb' in np.load(file).files]
+    assert stored == [0, 3, 6, 9]                 # 4 camera frames, not 10 images
+    recorder.close()
+
+    store = []
+    _fake_lerobot(monkeypatch, store)
+    export_lerobot(take, tmp_path / 'dataset', validate=False)
+    frames = store[0].frames
+    assert len(frames) == 10
+    for row, frame in enumerate(frames):
+        assert frame['observation.images.wrist_camera'][0, 0, 0] == row // 3
+        assert frame['action'][0] == row
+    episode = json.loads(next((tmp_path / 'dataset').glob('depth/episode_*/episode.json'))
+                         .read_text())
+    assert episode['depth_rows'] == [0, 0, 0, 3, 3, 3, 6, 6, 6, 9]
+    for row in (0, 3, 6, 9):
+        depth_file = next((tmp_path / 'dataset').glob(f'depth/episode_*/{row:06d}.npz'))
+        assert np.load(depth_file)['wrist_camera_depth_mm'][0, 0] == 100 + row // 3
+
+
+def test_collector_tags_frames_by_identity(tmp_path):
+    camera = MockCamera('wrist_camera', width=32, height=24)
+    schema = DatasetSchema.for_robot(RobotSpec.piper_x(), cameras=(camera,), fps=100)
+    robot = MockRobot()
+    robot.connect()
+    collector = EpisodeCollector(tmp_path, schema, robot=robot, cameras=(camera,), export=None)
+    collector.start('ids')
+    images, _, ids = collector._camera_payload()
+    assert set(ids) == {'wrist_camera'} and ids['wrist_camera'] > 0
+    collector.recorder.discard()
+    collector.recorder.close()

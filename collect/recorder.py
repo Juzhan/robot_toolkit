@@ -9,6 +9,12 @@ Frames are written uncompressed by default: deflating a 640x480 RGB + depth
 frame costs ~50 ms on a laptop CPU (the spool queue then drains at ~20 fps and a
 30 Hz episode aborts with "write queue is full") while saving only a few percent.
 Pass ``compress=True`` when disk space matters more than sustained frame rate.
+
+State/action rows can run faster than the cameras (e.g. 100 Hz rows, 30 fps
+images). With ``image_ids`` a camera image (and its depth) is spooled only on the
+row where that camera frame first appears; later rows showing the same frame keep
+``<camera>_ref`` = that row's index. Exporters resolve the references, so the
+dataset still has one image per row.
 """
 
 from __future__ import annotations
@@ -87,6 +93,7 @@ class EpisodeRecorder:
         self.error = ''
         self.take: Path | None = None
         self.pending: list[Path] = []
+        self._image_rows = {}
         self.processing = 0
         self.unfinished = 0
         self.export_errors: list[str] = []
@@ -125,6 +132,7 @@ class EpisodeRecorder:
             self.take = self.session / ('take_' + uuid.uuid4().hex[:10])
             self.take.mkdir()
             self.frames = 0
+            self._image_rows = {}     # camera -> (frame id, row index holding its pixels)
             self.error = ''
             self.phase = 'recording'
             metadata = dict(meta or {})
@@ -136,7 +144,9 @@ class EpisodeRecorder:
             return self.take
 
     def capture(self, observation_state, action, images=None, depth=None,
-                extra=None, timestamp: float | None = None) -> bool:
+                extra=None, timestamp: float | None = None, image_ids=None) -> bool:
+        """Queue one row. ``image_ids`` (``{camera: frame identity}``) lets repeated
+        camera frames be stored once and referenced (see the module docstring)."""
         with self._lock:
             if self.phase != 'recording' or self.take is None:
                 return False
@@ -163,8 +173,17 @@ class EpisodeRecorder:
                            if images is None or images.get(camera.name) is None]
                 if missing:
                     raise DatasetError('missing images for cameras: ' + ', '.join(missing))
+            index = self.frames
             for camera in self.schema.cameras:
                 image = None if images is None else images.get(camera.name)
+                frame_id = None if image_ids is None else image_ids.get(camera.name)
+                if image is not None and frame_id is not None:
+                    seen = self._image_rows.get(camera.name)
+                    if seen is not None and seen[0] == frame_id:
+                        sample[f'{camera.name}_ref'] = np.array([seen[1]], dtype=np.int64)
+                        continue          # same frame as an earlier row: no pixels
+                    self._image_rows[camera.name] = (frame_id, index)
+                    sample[f'{camera.name}_ref'] = np.array([index], dtype=np.int64)
                 if image is not None:
                     if tuple(image.shape) != (camera.height, camera.width, camera.channels):
                         raise DatasetError(
@@ -180,7 +199,6 @@ class EpisodeRecorder:
             if extra:
                 for key, value in extra.items():
                     sample[key] = np.asarray(value)
-            index = self.frames
             self.frames += 1
             self._queue.put_nowait(('frame', self.take, (index, sample)))
             return True
