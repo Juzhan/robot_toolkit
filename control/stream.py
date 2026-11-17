@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..core.realtime import collect_idle, pause_gc
 from ..errors import RobotUnavailable
 from ..robot.base import RobotState
 from ..robot.mock import MockRobot
@@ -133,6 +134,7 @@ class ServoStream:
         self._last_t = None
         self._fresh_at = 0.0
         self._bad_since = None
+        self._gc_paused = False
 
     # -------------------------------------------------------------- startup
     def preflight(self) -> RobotState:
@@ -152,9 +154,16 @@ class ServoStream:
         return state
 
     def start(self) -> None:
-        """Establish servo mode on hardware and the controller period if any."""
+        """Establish servo mode on hardware and the controller period if any.
+
+        On real hardware automatic garbage collection is paused for the stream
+        (``core.realtime``); ``finish()`` (or ``summary()``) collects and resumes it.
+        """
         if self.hardware and not ensure_servo(self.robot, self.dt, realtime=self.realtime):
             raise RobotUnavailable('cannot establish the servo stream')
+        if self.hardware and self.realtime:
+            pause_gc()
+            self._gc_paused = True
         if self.realtime and self.hardware and self.use_sdk_period:
             init_period = getattr(self.robot, 'init_period', None)
             frequency = float(getattr(getattr(self.robot, 'config', None),
@@ -250,7 +259,14 @@ class ServoStream:
     def elapsed(self) -> float:
         return 0.0 if self.start_time is None else self.now - self.start_time
 
+    def finish(self) -> None:
+        """The stream is over: reclaim garbage and resume collection (idempotent)."""
+        if self._gc_paused:
+            self._gc_paused = False
+            collect_idle(resume=True)
+
     def summary(self) -> dict:
+        self.finish()
         gaps = np.diff(self.sends)
         return {
             'servo_commands': self.commands,

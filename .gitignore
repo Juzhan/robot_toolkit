@@ -16,3 +16,6 @@ Thumbs.db
 /tool-runtimes/
 /model-weights/
 /external-tools.local.json
+
+# local editor settings
+.vscode/

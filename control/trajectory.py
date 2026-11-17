@@ -264,6 +264,7 @@ def run_trajectory(robot, q, dt: float, *, limits: TrajectoryLimits | None = Non
         failed = exc
         result.reason, result.error = 'error', str(exc)
     finally:
+        stream.finish()
         result.duration_s = stream.elapsed()
         result.stream = stream.summary()
         if not result.ok:

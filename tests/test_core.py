@@ -170,3 +170,32 @@ def test_config_dataclass_roundtrip(tmp_path):
     assert store.exists()
     assert store.load().inner.value == 3
 
+
+
+def test_realtime_gc_pause_and_resume():
+    import gc
+    from robot_toolkit.core.realtime import collect_idle, gc_paused, pause_gc
+
+    was = gc.isenabled()
+    try:
+        pause_gc()
+        assert gc_paused() and not gc.isenabled()
+        gc.enable()                       # a library re-enabling it is overridden
+        pause_gc()
+        assert not gc.isenabled()
+        collect_idle()
+        assert not gc.isenabled()         # still paused after an idle collection
+        collect_idle(resume=True)
+        assert gc.isenabled() and not gc_paused()
+    finally:
+        gc.unfreeze()
+        if was:
+            gc.enable()
+
+
+def test_realsense_capture_time():
+    from robot_toolkit.camera.realsense import capture_time
+
+    assert capture_time(9_990., 2, now_perf=50., now_wall=10.) == pytest.approx(49.99)
+    assert capture_time(9_990., 0, now_perf=50., now_wall=10.) is None      # device clock
+    assert capture_time(12_000., 2, now_perf=50., now_wall=10.) is None     # from the future

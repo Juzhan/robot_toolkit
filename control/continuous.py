@@ -495,6 +495,7 @@ def run_continuous_stream(robot, gripper, source: ChunkSource,
                 abort_source()
             except Exception:
                 pass
+        stream.finish()
         worker.join(timeout=2.0)
         if grip_worker is not None:
             grip_worker.join(timeout=2.0)

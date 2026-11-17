@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import threading
 import time
 from collections import deque
@@ -23,8 +24,15 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CALIBRATION = ROOT / 'outputs/robot_tasks/piper_calibrate_auto/calibration.json'
+REPO = Path(__file__).resolve().parents[2]          # the robot_toolkit repository
+if __package__ in (None, '') and str(REPO.parent) not in sys.path:
+    sys.path.insert(0, str(REPO.parent))            # run from a plain checkout, uninstalled
+
+from robot_toolkit.core.realtime import collect_idle, pause_gc  # noqa: E402
+
+# Hand-eye result of the Piper X wrist D435 (eye-in-hand, 2026-10-20); recalibrate
+# if the camera mount changes.
+DEFAULT_CALIBRATION = REPO / 'configs/calibration/piper_x_wrist_d435.json'
 
 
 def parse_args(argv=None):
@@ -112,7 +120,11 @@ def parse_args(argv=None):
     parser.add_argument('--reference-jerk', type=float, default=6.0,
                         help='max joint reference jerk in rad/s^3')
     parser.add_argument('--camera-latency', type=float, default=.04,
-                        help='seconds from exposure to host receipt; used to pick the arm pose of a frame')
+                        help='host clock: seconds from exposure to host receipt, used to pick the '
+                             'arm pose of a frame (also the fallback without hardware timestamps)')
+    parser.add_argument('--camera-clock', choices=['hardware', 'host'], default='hardware',
+                        help='hardware: per-frame capture time from the RealSense timestamp '
+                             '(mid-exposure); host: receipt time minus --camera-latency')
     parser.add_argument('--marker-alpha', type=float, default=.3,
                         help='marker pose low-pass weight per frame (1 = no filtering)')
     parser.add_argument('--goal-deadband', type=float, default=.002,
@@ -491,6 +503,8 @@ class ServoStream(threading.Thread):
         self.stop_event = threading.Event()
         self.error = None
         self.collision = collision
+        self.send_gaps = deque(maxlen=int(rate_hz * 10))   # s between servo_j calls
+        self._last_send = None
         self.brake = None
         if collision is not None:
             from robot_toolkit.control.guarded import CollisionBrake
@@ -553,6 +567,10 @@ class ServoStream(threading.Thread):
                     self.reference_q = q_ref.copy()
                     self.reference_v = self.reference.v.copy()
                 self.robot.servo_j(q_ref, self.dt)
+                sent = time.perf_counter()
+                if self._last_send is not None:
+                    self.send_gaps.append(sent - self._last_send)
+                self._last_send = sent
                 deadline += self.dt
                 remaining = deadline - time.perf_counter()
                 if remaining > 0:
@@ -721,7 +739,7 @@ class IbvsStream(ServoStream):
 
 
 def ibvs_command(args, robot, state, detection, cv2, object_points, frame, tcp_camera,
-                 marker_velocity=None):
+                 marker_velocity=None, stamp=None):
     """Returns (joint velocity, corner rms px, base-frame marker velocity fed forward)."""
     if detection['reprojection_error_px'] > 2.:
         raise ValueError('IBVS marker reprojection error exceeds 2 pixels')
@@ -734,12 +752,22 @@ def ibvs_command(args, robot, state, detection, cv2, object_points, frame, tcp_c
     if marker_velocity is not None and args.ibvs_feedforward > 0:
         base_camera = base_tcp @ tcp_camera
         marker = base_camera[:3, :3] @ detection['T_camera_marker'][:3, 3] + base_camera[:3, 3]
-        marker_speed = args.ibvs_feedforward * marker_velocity.update(frame.t, marker)
+        marker_speed = args.ibvs_feedforward * marker_velocity.update(
+            frame.t if stamp is None else stamp, marker)
         feedforward = np.concatenate((base_camera[:3, :3].T @ marker_speed, np.zeros(3)))
     velocity = ibvs_joint_velocity(error, interaction, jacobian, args.ibvs_gain,
                                    args.servo_damping, args.reference_speed,
                                    args.ibvs_linear_speed, args.ibvs_angular_speed, feedforward)
     return velocity, pixel_rms, marker_speed
+
+
+def frame_capture_time(frame, args):
+    """Mid-exposure time of ``frame`` on the perf_counter clock used by the streams."""
+    if args.camera_clock == 'hardware':
+        capture = (getattr(frame, 'meta', None) or {}).get('color', {}).get('capture_t')
+        if capture is not None:
+            return capture - (args.exposure_ms or 0.) / 2000.
+    return frame.t - args.camera_latency
 
 
 def run_ibvs(args, robot, camera, config, cv2, detector, object_points, tcp_camera, state):
@@ -757,6 +785,7 @@ def run_ibvs(args, robot, camera, config, cv2, detector, object_points, tcp_came
             args.log.parent.mkdir(parents=True, exist_ok=True)
             log = args.log.open('w')
         stream.start()
+        pause_gc()   # no collector pauses while streaming (collected again in finally)
         while ((not args.steps or processed < args.steps)
                and (not args.ibvs_duration or time.perf_counter() - start < args.ibvs_duration)):
             if stream.error is not None:
@@ -771,9 +800,10 @@ def run_ibvs(args, robot, camera, config, cv2, detector, object_points, tcp_came
                 stream.stop_event.wait(.003)
                 continue
             last_frame = frame.t
+            stamp = frame_capture_time(frame, args)
             detection = detect_marker(cv2, detector, object_points, frame.rgb,
                                       frame.intrinsics, frame.distortion, args.marker_id)
-            measured = stream.state_at(frame.t - args.camera_latency)
+            measured = stream.state_at(stamp)
             valid = detection is not None and measured is not None
             pixel_rms = None
             marker_speed = np.zeros(3)
@@ -782,7 +812,7 @@ def run_ibvs(args, robot, camera, config, cv2, detector, object_points, tcp_came
                 try:
                     velocity, pixel_rms, marker_speed = ibvs_command(
                         args, robot, measured, detection, cv2, object_points, frame, tcp_camera,
-                        marker_velocity)
+                        marker_velocity, stamp)
                 except ValueError:
                     valid = False
                     velocity[:] = 0.
@@ -798,6 +828,7 @@ def run_ibvs(args, robot, camera, config, cv2, detector, object_points, tcp_came
             stream.set_velocity(velocity)  # no marker: zero velocity, hold and wait
             processed += valid
             record = {'control': 'ibvs', 'frame': processed, 'frame_t': frame.t,
+                      'capture_t': stamp, 'latency_s': time.perf_counter() - stamp,
                       'valid': valid, 'locked': locked, 'corner_rms_px': pixel_rms,
                       'qdot': velocity.tolist(), 'marker_ff_mps': marker_speed.tolist(),
                       'distance_m': args.distance,
@@ -818,6 +849,7 @@ def run_ibvs(args, robot, camera, config, cv2, detector, object_points, tcp_came
         stream.stop_event.set()
         if stream.ident is not None:
             stream.join()
+        collect_idle(resume=True)
         if log is not None:
             log.close()
     if stream.error is not None:
@@ -858,6 +890,7 @@ def run_servo(args, robot, camera, config, cv2, detector, object_points, tcp_cam
                          args.reference_accel, args.reference_jerk, lower, upper,
                          args.collision, args.collision_clearance)
     stream.start()
+    pause_gc()   # no collector pauses while streaming (collected again in finally)
     blocked = 0
     block_warned = False
     marker = None
@@ -887,33 +920,34 @@ def run_servo(args, robot, camera, config, cv2, detector, object_points, tcp_cam
                 time.sleep(.003)
                 continue
             last_frame_t = frame.t
+            stamp = frame_capture_time(frame, args)
             detection = detect_marker(cv2, detector, object_points, frame.rgb,
                                       frame.intrinsics, frame.distortion, args.marker_id)
-            measured_state = stream.state_at(frame.t - args.camera_latency)
+            measured_state = stream.state_at(stamp)
             if (detection is None or measured_state is None
                     or detection['reprojection_error_px'] > 2.):
                 continue  # no (trustworthy) marker: the stream holds the last goal; wait
             T_base_camera = pose_matrix(robot.forward_kinematics(measured_state.q)) @ tcp_camera
             measured_marker = T_base_camera @ detection['T_camera_marker']
-            if last_seen is not None and frame.t - last_seen > args.reacquire_gap:
+            if last_seen is not None and stamp - last_seen > args.reacquire_gap:
                 marker = None
                 lead_velocity.reset()
             if marker is not None:
                 # A pose jump faster than a hand can move is a wrong detection/PnP flip.
                 jump = np.linalg.norm(measured_marker[:3, 3] - marker[:3, 3])
-                if jump > .03 + args.max_marker_speed * (frame.t - last_seen):
+                if jump > .03 + args.max_marker_speed * (stamp - last_seen):
                     rejected += 1
                     continue
             else:
                 # (Re)acquire only after several consecutive, mutually consistent detections.
-                if candidates and (frame.t - candidates[-1][0] > args.reacquire_gap or np.linalg.norm(
+                if candidates and (stamp - candidates[-1][0] > args.reacquire_gap or np.linalg.norm(
                         measured_marker[:3, 3] - candidates[-1][1]) > .02):
                     candidates = []
-                candidates.append((frame.t, measured_marker[:3, 3].copy()))
+                candidates.append((stamp, measured_marker[:3, 3].copy()))
                 if len(candidates) < args.reacquire_frames:
                     continue
                 candidates = []
-            last_seen = frame.t
+            last_seen = stamp
             processed += 1
             now = time.monotonic()
             if stream.still():
@@ -928,7 +962,7 @@ def run_servo(args, robot, camera, config, cv2, detector, object_points, tcp_cam
             if args.lead > 0:
                 # Least-squares velocity with a deadband: zero once the hand stops instead of
                 # decaying through the stop, and a capped offset, so the goal barely overshoots.
-                offset = lead_velocity.update(frame.t, measured_marker[:3, 3]) * args.lead
+                offset = lead_velocity.update(stamp, measured_marker[:3, 3]) * args.lead
                 size = np.linalg.norm(offset)
                 if size > args.lead_max_m:
                     offset *= args.lead_max_m / size
@@ -1008,7 +1042,8 @@ def run_servo(args, robot, camera, config, cv2, detector, object_points, tcp_cam
                     break
             if log is not None:
                 log.write(json.dumps({
-                    't': now, 'frame_t': frame.t, 'frame': processed,
+                    't': now, 'frame_t': frame.t, 'capture_t': stamp,
+                    'latency_s': time.perf_counter() - stamp, 'frame': processed,
                     'settled': settled, 'used': use_frame, 'updated': updated,
                     'q': measured_state.q.tolist(), 'q_latest': stream.latest.q.tolist(),
                     'goal': stream.get_goal().tolist(),
@@ -1017,6 +1052,8 @@ def run_servo(args, robot, camera, config, cv2, detector, object_points, tcp_cam
                     'pixel_error_px': detection['pixel_error_px'],
                     'reprojection_px': detection['reprojection_error_px'],
                     'rejected': rejected, 'blocked': blocked,
+                    'servo_gap_max_ms': (round(max(stream.send_gaps) * 1000, 2)
+                                         if stream.send_gaps else None),
                     'collision_brakes': stream.collision_brakes,
                     'clearance_m': (None if args.collision is None else
                                     args.collision.clearance(stream.reference_position())[0])})
@@ -1036,6 +1073,7 @@ def run_servo(args, robot, camera, config, cv2, detector, object_points, tcp_cam
     finally:
         stream.stop_event.set()
         stream.join(timeout=1.)
+        collect_idle(resume=True)
         if log is not None:
             log.close()
 

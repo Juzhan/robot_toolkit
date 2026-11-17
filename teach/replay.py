@@ -265,6 +265,7 @@ class Replayer:
             result.aborted = True
             result.reason = 'keyboard interrupt'
         finally:
+            stream.finish()
             result.duration = stream.elapsed()
             overruns = sorted(max(0.0, work - dt) for work in stream.work)
             if overruns:

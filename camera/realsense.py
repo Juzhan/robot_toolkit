@@ -138,6 +138,9 @@ class RealSenseCamera(ThreadedCamera):
             color_meta = {'hw_time_ms': float(color.get_timestamp()),
                           'time_domain': int(color.get_frame_timestamp_domain()),
                           'frame_number': int(color.get_frame_number())}
+            capture_t = capture_time(color_meta['hw_time_ms'], color_meta['time_domain'])
+            if capture_t is not None:
+                color_meta['capture_t'] = capture_t   # perf_counter clock, like frame.t
             if self.depth_enabled:
                 depth_frame = frames.get_depth_frame()
                 if depth_frame:
@@ -157,6 +160,24 @@ class RealSenseCamera(ThreadedCamera):
             except Exception:
                 pass
             self._pipeline = None
+
+
+def capture_time(hw_time_ms, time_domain, now_perf=None, now_wall=None):
+    """Frame capture time on the host ``perf_counter`` clock, or ``None``.
+
+    RealSense ``global_time`` (2) and ``system_time`` (1) timestamps are host wall
+    clock milliseconds of the frame (the device clock mapped to the host for
+    global time). The frame's age is measured on the wall clock and subtracted
+    from ``perf_counter``. A ``hardware_clock`` (0) stamp has no host meaning.
+    """
+    if int(time_domain) not in (1, 2):
+        return None
+    now_perf = time.perf_counter() if now_perf is None else now_perf
+    now_wall = time.time() if now_wall is None else now_wall
+    age = now_wall - float(hw_time_ms) / 1000.
+    if not 0. <= age < 1.:        # clock jump or bogus metadata: do not trust it
+        return None
+    return now_perf - age
 
 
 def list_devices():

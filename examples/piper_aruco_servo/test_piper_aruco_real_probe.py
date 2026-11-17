@@ -1,4 +1,3 @@
-import shlex
 import threading
 import time
 from pathlib import Path
@@ -153,9 +152,12 @@ def test_legacy_joint_speed_alias_cannot_create_a_second_limit():
 
 
 def test_launcher_uses_shared_motion_limits():
-    command = Path(probe.__file__).with_name('servo.sh').read_text()
-    argv = shlex.split(command.replace('\\\n', ' '))[2:]
-    assert '--ibvs-joint-speed' not in argv
+    import run_servo
+
+    argv = run_servo.build_argv([])
+    assert '--ibvs-joint-speed' not in argv and '--log' in argv
+    assert '--obstacles' in run_servo.build_argv(['--obstacles'])
+    assert '--execute' not in run_servo.build_argv(['--read-only'])
     argv[argv.index('--control') + 1] = 'ibvs'  # the launcher may be on either controller
     ibvs = probe.parse_args(argv)
     argv[argv.index('--control') + 1] = 'pbvs'
@@ -751,3 +753,12 @@ def test_ibvs_stream_brakes_before_a_virtual_wall(monkeypatch):
     commands = np.asarray(robot.commands)
     # Slows down approaching the clearance band and creeps up to it, never past.
     assert commands[:, 0].max() <= .5 - .02 - .015 + 1e-6 and commands[-1, 0] > .45
+
+
+def test_frame_capture_time_prefers_hardware_mid_exposure():
+    args = probe.parse_args(['--exposure-ms', '8'])
+    frame = SimpleNamespace(t=10., meta={'color': {'capture_t': 9.98}})
+    assert probe.frame_capture_time(frame, args) == pytest.approx(9.98 - .004)
+    assert probe.frame_capture_time(SimpleNamespace(t=10., meta={}), args) == pytest.approx(9.96)
+    args = probe.parse_args(['--camera-clock', 'host', '--camera-latency', '.03'])
+    assert probe.frame_capture_time(frame, args) == pytest.approx(9.97)
