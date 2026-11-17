@@ -304,8 +304,71 @@ gripper = build_gripper('agx', robot=robot)
 gripper.close(wait=True)
 ```
 
-`build_robot('piper_x')` 的 `SafeRobot` 会用通用插值；需要 SDK 原生平滑
-`move_j` 时直接用 `AgxPiperRobot`，或 profile 里设 `safety=False`。
+`build_robot('piper_x')` 的 `SafeRobot` 会先检查目标是否越限，然后优先调用
+Piper 控制器原生的 `move_j`，由控制器做平滑和轨迹规划；没有原生规划器或
+指定 `use_native=False` 时，使用宿主侧逐 tick 插值。
+
+真机原生模式下可以直接用 `set_speed_percent()` 调速度：
+
+Piper 的 `AgxPiperConfig.speed_percent` 默认是 `100`；这是控制器速度倍率，
+不是实际关节速度。`build_robot()` 的安全速度上限继承
+`core/safety.py` 中的 `JointLimits.max_velocity` 默认值，可通过 profile 的
+`limits.max_velocity` 显式覆盖；`JointLimits.symmetric()` 也继承同一默认值。
+100 Hz 下，安全层允许目标领先实测关节的量为该速度上限乘以 `0.01 s`
+（同时受 `max_step_rad` 限制）。
+
+```python
+robot = build_robot('piper_x')
+robot.set_speed_percent(20)      # 先低速，范围 0-100
+robot.connect()
+robot.move_j(q, wait=True, timeout=30)
+```
+
+`connect()` 会在 `enable()` 之后、设置 J 模式之前重新下发速度百分比；如果
+在运行中改速度，下一次运动也会重新发送模式帧。
+
+切换开关在 `move_j` / `move_p` 调用本身上，不是 profile 全局配置：
+
+```python
+robot.move_j(q, use_native=False, speed=0.2, accel=0.3,
+             wait=True, timeout=30)
+robot.move_p(pose, use_native=False, speed=0.2, accel=0.3,
+             wait=True, timeout=30)
+```
+
+- `use_native=True`（默认）：Piper 真机走控制器原生 `move_j` / `move_p`；
+- `use_native=False`：`move_j` 走通用插值，`move_p` 走宿主 IK + 通用
+  `move_j`。
+
+Piper 真机允许 `use_native=False`，但 `servo_j` 底层仍是 SDK 的点对点
+`move_j`，不是硬实时伺服。通用插值结束后，如果安全限幅或控制器跟踪延迟使
+关节尚未到位，会继续通过同一安全层发送末点，直到误差不超过 0.02 rad。
+插值和到位跟踪共用一次 `timeout`；超时会停止并返回 `False`，不会抛出超时异常。
+原生模式的 `speed` 按 `max_joint_speed` 比例映射为 SDK 百分比，不保证与
+通用模式等速；`accel` 只作用于通用模式。真机跟踪效果仍需低速实测确认。
+
+### 宿主侧 IK（默认自动配置）
+
+`AgxPiperRobot` 默认 `ik_backend='auto'`。如果环境里装了 PyRoki，会自动用
+随包提供的 `assets/piperx_assets/assets/piper_x.urdf`、目标 link `link6` 和
+`joint1..joint6` 建一个宿主 IK：
+
+```python
+robot = build_robot('piper_x')
+robot.connect()
+q = robot.inverse_kinematics(robot.state().tcp, seed=robot.state().q)
+robot.move_j(q)
+```
+
+- `ik_backend='none'` 可关闭自动 IK；
+- `ik_backend='pyroki'` 强制要求 PyRoki，缺失时构造阶段报错；
+- `ik_target_link` 默认 `link6`（法兰）；配置了非零 `tcp_offset` 时需改成对应工具 link；
+- `ik_self_collision=True` 可加入自碰撞 cost，但会更慢；
+- `ik_warmup=True`（默认）会在 `connect()` 后用当前 TCP 位姿预热一次
+  JAX/PyRoki，避免第一次通用 `move_p` 再等编译；只读连接和
+  `ik_warmup=False` 会跳过。预热只做计算，不会下发运动。
+- 真机 `move_p` 仍优先用控制器原生 P 运动；宿主 IK 主要用于
+  `inverse_kinematics` 求关节角，再把结果交给原生 `move_j`。
 
 ## 键盘示教（无相机）
 
@@ -563,7 +626,8 @@ robot.move_p(target, wait=True)
 - **固件**：`firmware='auto'` 会读 `get_firmware()` 后用
   `resolve_firmware_profile()` 重连；也可以显式写 `default`/`v183`/`v188`/`v189`。
 - **速度**：SDK 用 `set_speed_percent(0..100)`，不是每个关节的 rad/s；
-  `move_j` 的 `speed`/`accel` 参数不会传给 SDK。第一次把 `speed_percent` 设 10–30。
+  原生 `move_j(speed=...)` 使用比例映射，`accel` 不会传给 SDK。
+  第一次把 `speed_percent` 设 10–30，并省略原生调用的 `speed` 参数。
 - **笛卡尔**：后端另外暴露 `move_p(pose)` / `move_l(pose)`，`pose` 为
   `[x,y,z,rx,ry,rz]` 旋转向量（m / rad），和 UR 的 `state().tcp` 保持一致；
   后端内部转成 SDK 的 RPY。使用前先 `set_tcp_offset()` 或在配置里填

@@ -24,6 +24,7 @@ class MockRobot(RobotBackend):
         spec = spec or RobotSpec.generic(6, name='mock')
         super().__init__(spec, Capabilities(servo_j=True, move_j=True,
                                             servo_l=inverse_kinematics is not None,
+                                            inverse_kinematics=inverse_kinematics is not None,
                                             freedrive=True, gripper=spec.gripper is not None))
         self.clock = clock
         self._t0 = clock()
@@ -76,6 +77,9 @@ class MockRobot(RobotBackend):
             tcp = np.asarray(self._fk(self._q), dtype=float)
         return RobotState(t=self.clock() - self._t0, q=self._q.copy(), qd=self._qd.copy(),
                           tcp=tcp, protective_stop=False, connected=self._connected,
+                          timestamp_clock='host_elapsed',
+                          sources={'q': 'simulation', 'qd': 'simulation',
+                                   'tcp': 'forward_kinematics' if tcp is not None else 'unavailable'},
                           extra={'target': self._target.copy(), 'gripper': self._gripper,
                                  'freedrive': self._freedrive})
 
@@ -94,6 +98,13 @@ class MockRobot(RobotBackend):
             raise NotSupported('MockRobot needs inverse_kinematics to accept Cartesian targets')
         joints = np.asarray(self._ik(np.asarray(pose, dtype=float)), dtype=float)
         return self.servo_j(joints, dt)
+
+    def inverse_kinematics(self, pose, seed=None):
+        if self._ik_solver is not None:
+            return self._ik_solver.solve(pose, seed=seed)
+        if self._ik is None:
+            raise NotSupported('MockRobot needs inverse_kinematics to accept Cartesian targets')
+        return np.asarray(self._ik(np.asarray(pose, dtype=float)), dtype=float).tolist()
 
     def freedrive(self, enabled: bool) -> bool:
         self._freedrive = bool(enabled)

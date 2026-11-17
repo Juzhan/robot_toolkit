@@ -10,9 +10,10 @@ import pytest
 
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.core.mathutils import euler_to_matrix, rotvec_to_matrix
-from robot_toolkit.errors import ConnectionFailed
+from robot_toolkit.core.safety import JointLimits, SafetyGuard
+from robot_toolkit.errors import ConnectionFailed, NotSupported
 from robot_toolkit.profiles import build_gripper, build_robot
-from robot_toolkit.robot import (AgxPiperConfig, AgxPiperRobot,
+from robot_toolkit.robot import (AgxPiperConfig, AgxPiperRobot, SafeRobot,
                                  scan_piper_can, set_piper_linkage)
 
 
@@ -195,6 +196,12 @@ def test_real_backend_with_fake_sdk(monkeypatch):
     assert state.tcp is not None
     assert state.tcp[3:] == pytest.approx([0.0, 1.5708, 0.0], abs=1e-5)
     assert state.extra['tcp_rpy'] == pytest.approx([0.0, 1.5708, 0.0])
+    status = robot.status()
+    assert status['state']['protective_stop'] is False
+    assert status['state']['fault'] is False
+    assert status['state']['enabled'] is None
+    assert status['state']['sources']['qd'] == 'finite_difference_clipped'
+    assert status['state']['sources']['extra.enabled'] == 'cached_command_state'
     assert robot.connected and robot._enabled
     assert robot.servo_j([0.05] * 6, 0.01)
     assert robot.servo_j([0.06] * 6, 0.01)
@@ -218,6 +225,97 @@ def test_real_backend_with_fake_sdk(monkeypatch):
     assert robot.freedrive(False)
     assert robot.state().extra['feedback'] == 'follower'
     robot.disconnect()
+
+
+def test_safe_robot_uses_native_joint_planner(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(model='piper_x', firmware='default',
+                                         enable_on_connect=True), mock=False)
+    robot.connect()
+    guard = SafetyGuard(JointLimits([-3.0] * 6, [3.0] * 6, 1.0))
+    safe = SafeRobot(robot, guard)
+    try:
+        before = len(arm.commands)
+        assert safe.move_j([0.2] * 6, speed=0.2, wait=True, timeout=1.0)
+        assert len(arm.commands) == before + 1
+        assert arm.commands[-1] == pytest.approx([0.2] * 6)
+        assert arm.speed == 20
+        result = safe.move_j_result([0.1] * 6, speed=0.2, timeout=1.0)
+        assert result['ok'] and result['reason'] == 'reached'
+        assert result['joint_error_rad'] == pytest.approx(0.0)
+    finally:
+        safe.disconnect()
+
+
+def test_missing_arm_status_remains_unknown(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(firmware='default', ik_warmup=False))
+    robot.connect_read_only()
+    monkeypatch.setattr(arm, 'get_arm_status', lambda: _Message(types.SimpleNamespace()))
+    try:
+        state = robot.status()['state']
+        assert state['protective_stop'] is None
+        assert state['fault'] is None
+        assert not arm.enabled and arm.commands == []
+    finally:
+        robot.disconnect()
+
+
+def test_ik_warmup_runs_at_connect(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+
+    class _WarmupSolver:
+        def __init__(self):
+            self.calls = []
+
+        def warmup(self, pose, seed=None):
+            self.calls.append((list(pose), None if seed is None else list(seed)))
+            return True
+
+    robot = AgxPiperRobot(AgxPiperConfig(model='piper_x', firmware='default',
+                                         enable_on_connect=True), mock=False)
+    solver = _WarmupSolver()
+    robot.set_inverse_kinematics(solver)
+    robot.connect()
+    try:
+        assert len(solver.calls) == 1
+        assert len(solver.calls[0][0]) == 6
+    finally:
+        robot.disconnect()
+
+
+def test_safe_robot_can_force_generic_motion_on_piper(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'pyAgxArm', _fake_sdk())
+    arm = _FakeArm()
+    _FakeFactory.arm = arm
+    robot = AgxPiperRobot(AgxPiperConfig(model='piper_x', firmware='default',
+                                         enable_on_connect=True), mock=False)
+    robot.connect()
+
+    class _FixedIK:
+        def solve(self, pose, seed=None):
+            return [0.3] * 6
+
+    robot.set_inverse_kinematics(_FixedIK())
+    safe = SafeRobot(robot, SafetyGuard(
+        JointLimits([-3.0] * 6, [3.0] * 6, 1.0)))
+    try:
+        assert safe.move_j([0.2] * 6, speed=1.0, accel=1.0,
+                           rate_hz=200, timeout=2.0, use_native=False)
+        assert np.allclose(arm.q, [0.2] * 6, atol=0.02)
+        assert len(arm.commands) > 1
+        assert safe.move_p([0.1, 0.0, 0.3, 0.0, 0.0, 0.0],
+                           speed=1.0, accel=1.0, timeout=2.0, use_native=False)
+        assert np.allclose(arm.q, [0.3] * 6, atol=0.02)
+        assert arm.pose_commands == []
+    finally:
+        safe.disconnect()
 
 
 def test_disable_retries_while_feedback_lags(monkeypatch):

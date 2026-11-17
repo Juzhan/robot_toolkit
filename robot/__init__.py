@@ -7,6 +7,7 @@ imported lazily when the corresponding backend is constructed.
 from .agx_piper import (PIPER_CAN_LABELS, AgxPiperConfig, AgxPiperRobot,
                         scan_piper_can, set_piper_linkage)
 from .base import Capabilities, RobotBackend, RobotState
+from .ik import PyrokiIK
 from .mock import MockRobot
 from .safety import SafeRobot
 from .ur_rtde import UrRtdeConfig, UrRtdeRobot
@@ -21,6 +22,7 @@ __all__ = [
     'scan_piper_can',
     'set_piper_linkage',
     'MockRobot',
+    'PyrokiIK',
     'SafeRobot',
     'UrRtdeConfig',
     'UrRtdeRobot',

@@ -229,7 +229,13 @@ class CalibrationSession:
         name = camera_name or self.camera_name
         store = CalibrationStore(path)
         summary = {'camera': name, 'mode': self.mode}
-        if len(self.views) >= 3:
+        # Hand-eye PnP used these intrinsics. Do not silently replace them with
+        # a separately fitted camera model while keeping the old extrinsics.
+        if len(self.base_tcp) >= 3 and self.camera is not None and self.camera.intrinsics is not None:
+            store.set_intrinsics(name, self.camera.intrinsics, self.camera.distortion,
+                                 (self.camera.width, self.camera.height))
+            summary['intrinsics_source'] = 'capture'
+        elif len(self.views) >= 3:
             intrinsics = self.solve_intrinsics()
             store.set_intrinsics(name, intrinsics.K, intrinsics.dist,
                                  intrinsics.image_size)

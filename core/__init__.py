@@ -26,6 +26,7 @@ from .mathutils import (
 )
 from .rate import Rate
 from .safety import JointLimits, SafetyGuard, WorkspaceBox
+from .safety_envelope import SafetyEnvelope
 
 __all__ = [
     'ContinuousReference',
@@ -54,4 +55,5 @@ __all__ = [
     'JointLimits',
     'SafetyGuard',
     'WorkspaceBox',
+    'SafetyEnvelope',
 ]

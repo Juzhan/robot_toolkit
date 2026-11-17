@@ -17,7 +17,7 @@ from ..errors import SafetyViolation
 class JointLimits:
     lower: np.ndarray
     upper: np.ndarray
-    max_velocity: np.ndarray | float = 1.0
+    max_velocity: np.ndarray | float = 6
     max_acceleration: np.ndarray | float | None = None
 
     def __post_init__(self):
@@ -35,8 +35,12 @@ class JointLimits:
         return int(self.lower.size)
 
     @classmethod
-    def symmetric(cls, dof: int, bound: float = np.pi, max_velocity: float = 1.0) -> 'JointLimits':
-        return cls(np.full(dof, -abs(bound)), np.full(dof, abs(bound)), max_velocity)
+    def symmetric(cls, dof: int, bound: float = np.pi, max_velocity: float | None = None) -> 'JointLimits':
+        lower = np.full(dof, -abs(bound))
+        upper = np.full(dof, abs(bound))
+        if max_velocity is None:
+            return cls(lower, upper)
+        return cls(lower, upper, max_velocity)
 
     def clamp(self, joints) -> np.ndarray:
         return np.clip(np.asarray(joints, dtype=float), self.lower, self.upper)

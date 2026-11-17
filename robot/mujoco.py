@@ -128,7 +128,8 @@ class MujocoRobot(RobotBackend):
                              gripper=(None if gripper_actuator is None
                                       else GripperSpec(name=gripper_actuator)))
         super().__init__(spec, Capabilities(servo_j=True, servo_l=True, move_j=True,
-                                            move_l=True, freedrive=False,
+                                            move_l=True, inverse_kinematics=True,
+                                            freedrive=False,
                                             gripper=gripper_actuator is not None))
         self.joint_names = joint_names
         self.qpos_indices = np.array([self.model.joint(name).qposadr[0] for name in joint_names])
@@ -179,10 +180,29 @@ class MujocoRobot(RobotBackend):
         qd = self.data.qvel[self.dof_indices].copy()
         return RobotState(t=self.clock() - self._t0, q=q, qd=qd, tcp=tcp,
                           protective_stop=False, connected=self.connected,
-                          extra={'gripper': self.gripper_width()})
+                          timestamp_clock='host_elapsed',
+                          tcp_frame='world',
+                          sources={'q': 'simulation', 'qd': 'simulation', 'tcp': 'forward_kinematics'},
+                          extra={'gripper': self.gripper_width(), 'simulation_time': float(self.data.time)})
+
+    def describe(self) -> dict:
+        description = super().describe()
+        description['tcp_frame'] = 'world'
+        return description
 
     def tcp_pose(self) -> np.ndarray:
         return self.state().tcp
+
+    def inverse_kinematics(self, pose, seed=None):
+        if self._ik_solver is not None:
+            return self._ik_solver.solve(pose, seed=seed)
+        pose = np.asarray(pose, dtype=float).reshape(6)
+        q0 = self.state().q if seed is None else np.asarray(seed, dtype=float)
+        joints, position_error, rotation_error = self.ik.solve(
+            pose[:3], rotvec_to_matrix(pose[3:]), q0)
+        if position_error > 0.005 or rotation_error > 0.05:
+            return []
+        return joints.tolist()
 
     # ---------------------------------------------------------------- motion
     def servo_j(self, joints, dt: float) -> bool:

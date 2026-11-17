@@ -1,0 +1,30 @@
+{
+  "slug": "piper_safety_envelope",
+  "task": "piper safety envelope capture",
+  "mode": "safety",
+  "root": "outputs/robot_tasks",
+  "robot": {
+    "kind": "agx_piper",
+    "name": "piper_x",
+    "options": {
+      "model": "piper_x",
+      "interface": "socketcan",
+      "channel": "can0",
+      "firmware": "default",
+      "enable_on_connect": false,
+      "configure_on_connect": false,
+      "has_gripper": true
+    },
+    "safety": false
+  },
+  "safety": {
+    "path": "outputs/robot_tasks/piper_safety_envelope/safety_envelope.json",
+    "rate": 25.0,
+    "max_duration": 300.0,
+    "margin_rad": 0.05,
+    "tcp_margin_m": 0.02,
+    "min_samples": 100,
+    "freedrive": true,
+    "wait_feedback": "leader"
+  }
+}

@@ -45,11 +45,12 @@ class UrRtdeRobot(RobotBackend):
     def __init__(self, config: UrRtdeConfig | None = None, spec: RobotSpec | None = None,
                  mock: bool | None = None):
         spec = spec or RobotSpec.ur5e()
-        super().__init__(spec, Capabilities(servo_j=True, servo_l=True, move_j=True,
-                                            move_l=True, freedrive=True,
-                                            gripper=False))
         self.config = config or UrRtdeConfig()
         self.mock = bool(self.config.mock if mock is None else mock)
+        super().__init__(spec, Capabilities(servo_j=True, servo_l=True, move_j=True,
+                                            move_l=True,
+                                            inverse_kinematics=not self.mock,
+                                            freedrive=True, gripper=False))
         self.control = None
         self.receive = None
         self._mock_robot = MockRobot(spec, home=self.config.home_joints,
@@ -126,11 +127,16 @@ class UrRtdeRobot(RobotBackend):
         tcp = np.asarray(self.receive.getActualTCPPose(), dtype=float)
         try:
             timestamp = float(self.receive.getTimestamp())
+            timestamp_clock = 'controller'
         except Exception:
             timestamp = time.monotonic() - self._t0
+            timestamp_clock = 'host_elapsed'
         return RobotState(t=timestamp, q=joints, qd=qd, tcp=tcp,
                           protective_stop=bool(self.receive.isProtectiveStopped()),
-                          connected=True)
+                          connected=self.connected, timestamp_clock=timestamp_clock,
+                          protective_stop_known=True,
+                          sources={'q': 'controller', 'qd': 'controller', 'tcp': 'controller',
+                                   'protective_stop': 'controller'})
 
     def protective_stop(self) -> bool:
         if self.mock:
@@ -307,12 +313,16 @@ class UrRtdeRobot(RobotBackend):
             return self._freedrive
 
     # --------------------------------------------------------------- extras
-    def inverse_kinematics(self, pose):
+    def inverse_kinematics(self, pose, seed=None):
+        if self._ik_solver is not None:
+            return self._ik_solver.solve(pose, seed=seed)
         if self.mock or self.control is None:
             return []
         try:
-            seed = list(map(float, self.state().q))
-            joints = self.control.getInverseKinematics(list(map(float, pose)), seed)
+            if seed is None:
+                seed = self.state().q
+            joints = self.control.getInverseKinematics(
+                list(map(float, pose)), list(map(float, seed)))
             return [float(value) for value in joints] if joints else []
         except Exception:
             return []

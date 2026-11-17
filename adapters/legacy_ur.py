@@ -17,7 +17,9 @@ class LegacyUrRobot(RobotBackend):
     def __init__(self, ur_robot, spec: RobotSpec | None = None):
         super().__init__(spec or RobotSpec.ur5e(),
                          Capabilities(servo_j=True, servo_l=True, move_j=True,
-                                      move_l=True, freedrive=True))
+                                      move_l=True,
+                                      inverse_kinematics=hasattr(ur_robot, 'get_inverse_kin'),
+                                      freedrive=True))
         self.ur = ur_robot
         self._connected = bool(getattr(ur_robot, 'connected', False))
 
@@ -100,7 +102,9 @@ class LegacyUrRobot(RobotBackend):
     def freedrive(self, enabled: bool) -> bool:
         return bool(self.ur.freedrive(enabled))
 
-    def inverse_kinematics(self, pose):
+    def inverse_kinematics(self, pose, seed=None):
+        if self._ik_solver is not None:
+            return self._ik_solver.solve(pose, seed=seed)
         function = getattr(self.ur, 'get_inverse_kin', None)
         return [] if function is None else list(function(pose))
 

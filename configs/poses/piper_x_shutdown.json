@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "shutdown",
+  "label": "关闭姿态",
+  "robot": "piper_x",
+  "recorded_at": "2026-10-20T18:28:18.920297+08:00",
+  "source": "read_only_can0_follower_feedback",
+  "purpose": "User-selected shutdown reference pose; loading does not move or disable the robot.",
+  "q_rad": [
+    0.08518952078984322,
+    -0.00874409955249159,
+    0.021153390534171274,
+    0.5133362395965722,
+    -0.03056071520242071,
+    0.11306242894419266
+  ],
+  "q_deg": [4.881, -0.501, 1.212, 29.412, -1.751, 6.478],
+  "tcp_pose": [
+    0.086703,
+    0.008485999999999999,
+    0.15475899999999998,
+    -1.4874144549220436,
+    1.5000040442886058,
+    -0.825530977706572
+  ],
+  "tcp_convention": "T_base_tcp: [x,y,z,rx,ry,rz], metres and rotation-vector radians",
+  "gripper_width_m": 0.0,
+  "observation": {
+    "samples": 10,
+    "joint_spread_rad": [0, 0, 0, 0, 0, 0],
+    "arm_status": 0,
+    "motion_status": 0,
+    "err_code": 0
+  }
+}
