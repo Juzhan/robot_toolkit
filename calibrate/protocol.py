@@ -14,15 +14,40 @@ from .store import CalibrationStore
 from .identity import calibration_identity
 
 
-def capture_station(session, frames=6, timeout=5.0):
-    """Aggregate distinct, fresh frames at a stationary pose into one view."""
+def board_jitter_px(observations):
+    """Largest deviation of any shared corner from its per-corner median (pixels)."""
+    tracks = {}
+    for obs in observations:
+        for obj, pixel in zip(obs.object_points, obs.image_points):
+            tracks.setdefault(tuple(obj), []).append(pixel)
+    shared = [np.asarray(v, float) for v in tracks.values() if len(v) == len(observations)]
+    if not shared:
+        return float('inf')
+    return max(float(np.max(np.linalg.norm(v - np.median(v, axis=0), axis=1))) for v in shared)
+
+
+def capture_station(session, frames=6, timeout=5.0, max_jitter_px=None):
+    """Aggregate distinct, fresh frames at a stationary pose into one view.
+
+    With ``max_jitter_px`` the window slides until the held/viewed board itself
+    has stopped moving, not only the robot TCP.
+    """
     camera, robot, detector = session.camera, session.robot, session.detector
     deadline = time.monotonic() + timeout
     started = time.perf_counter()
     last = None
     records = []
     joints = []
-    while len(records) < frames and time.monotonic() < deadline:
+    jitter = None
+    while time.monotonic() < deadline:
+        if len(records) >= frames:
+            if not max_jitter_px:
+                break
+            jitter = board_jitter_px([r[1] for r in records])
+            if jitter <= max_jitter_px:
+                break
+            records.pop(0)
+            joints.pop(0)
         frame = camera.snapshot()
         if frame.rgb is None or frame.age() > .5 or frame.t <= started or frame.t == last:
             time.sleep(.02)
@@ -37,10 +62,11 @@ def capture_station(session, frames=6, timeout=5.0):
         if tcp is None:
             raise CalibrationError('robot has no TCP feedback')
         records.append((frame, obs, np.asarray(tcp)))
-        if getattr(state, 'q', None) is not None:
-            joints.append(np.asarray(state.q).copy())
-    if len(records) < frames:
+        q = getattr(state, 'q', None)
+        joints.append(None if q is None else np.asarray(q).copy())
+    if len(records) < frames or (max_jitter_px and (jitter is None or jitter > max_jitter_px)):
         return None
+    joints = [q for q in joints if q is not None]
     points = {}
     for frame, obs, _ in records:
         for obj, pixel in zip(obs.object_points, obs.image_points):
@@ -74,6 +100,7 @@ def capture_station(session, frames=6, timeout=5.0):
                 image_points=[np.median([p for p, _ in points[k]], axis=0).tolist() for k in keys],
                 base_tcp=mean_pose.tolist(), frames_used=len(records), pose_spread_mm=spread,
                 pose_spread_deg=angular_spread,
+                board_jitter_px=board_jitter_px([r[1] for r in records]),
                 actual_q_rad=np.median(joints, axis=0).tolist() if joints else None,
                 point_depth_mm=depth, _rgb=records[-1][0].rgb)
 

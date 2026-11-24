@@ -132,6 +132,7 @@ class AgxPiperRobot(RobotBackend):
         self._last_servo_at = 0.0
         self._last_gripper_width = 0.0
         self._last_gripper_force = 0.0
+        self._leader_seen = {}
         self._qd = np.zeros(spec.dof)
         self._t0 = time.monotonic()
         self._mock_robot = (MockRobot(spec, home=self.config.home_joints,
@@ -573,6 +574,56 @@ class AgxPiperRobot(RobotBackend):
             return None
         q = np.asarray(values, dtype=float).reshape(-1)
         return q if q.shape == (self.spec.dof,) else None
+
+    def _message_age(self, key, message):
+        """Seconds since this bus message last changed timestamp (host clock)."""
+        now = time.monotonic()
+        stamp = getattr(message, 'timestamp', None)
+        if stamp is None:
+            return None
+        seen = self._leader_seen.get(key)
+        if seen is None or seen[0] != stamp:
+            self._leader_seen[key] = (stamp, now)
+            return 0.0 if seen is not None else None
+        return now - seen[1]
+
+    def leader_feedback(self) -> dict:
+        """Leader joints and gripper command on the bus, with freshness (read-only).
+
+        In master-slave mode the leader's gripper control frame is the command
+        the follower executes, which is the correct gripper *action*; the
+        follower width stops at the object while the command keeps closing.
+        Ages are ``None`` until a second distinct message has been seen.
+        """
+        result = dict(q=None, q_age_s=None, gripper=None, gripper_age_s=None)
+        if self.mock:
+            # Offline runs: a leader that mirrors the simulated follower.
+            sample = self._mock_robot.state()
+            result.update(q=None if sample.q is None else np.asarray(sample.q, float))
+            return result
+        if self._robot is None:
+            return result
+        try:
+            message = self._robot.get_leader_joint_angles()
+        except Exception:
+            message = None
+        values = self._msg_value(message)
+        if values is not None:
+            q = np.asarray(values, dtype=float).reshape(-1)
+            if q.shape == (self.spec.dof,):
+                result.update(q=q, q_age_s=self._message_age('q', message))
+        if self._effector is not None:
+            try:
+                command = self._effector.get_gripper_ctrl_states()
+            except Exception:
+                command = None
+            msg = self._msg_value(command)
+            value = None if msg is None else getattr(msg, 'value', None)
+            # A fully squeezed leader reports slightly below zero; that is still "closed".
+            if value is not None and -0.01 <= float(value) <= 1.5 * self.config.gripper_max_width:
+                result.update(gripper=max(0.0, float(value)),
+                              gripper_age_s=self._message_age('gripper', command))
+        return result
 
     # ---------------------------------------------------------------- motion
     def enable(self, timeout: float | None = None) -> bool:

@@ -28,8 +28,9 @@ from pathlib import Path
 from .collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
                       exporter_for)
 from .collect.passive import sample_episodes
+from .calibrate.options import CalibrateOptions
 from .config import build_dataclass
-from .errors import CalibrationError
+from .errors import DatasetError
 from .profiles import build_camera_hub, build_gripper, build_robot
 from .core.safety_envelope import SafetyEnvelope
 from .teach import (Replayer, joycon_teach, joint_motion, keyboard_teach,
@@ -92,6 +93,11 @@ class CollectOptions:
     # ~50 ms per 640x480 RGB+depth frame and cannot keep up with a 30 Hz camera;
     # turn it on only when disk space matters more than sustained frame rate.
     compress: bool = False
+    # One LeRobot dataset per task that every session appends to; empty means
+    # <task dir>/lerobot. Raw takes stay under dataset_root/<session>.
+    lerobot_root: str = ''
+    # Export in a low-priority child process so encoding cannot stall or crash capture.
+    isolated_export: bool = True
 
 
 @dataclass
@@ -103,6 +109,7 @@ class SessionOptions:
     double_press_timeout_s: float = 8.0
     replay_speed_scale: float | None = None
     auto_replay: bool = False
+    voice: bool = False
 
 
 @dataclass
@@ -120,55 +127,12 @@ class MasterSlaveOptions:
     auto_record: bool = True
     sample_seconds: float = 0.0
     fps: float = 30.0
-
-
-@dataclass
-class CalibrateOptions:
-    """Board-based calibration driven from the task file.
-
-    ``kind``: ``handeye`` (robot/board pose pairs), ``intrinsics`` (board views
-    only) or ``both``.  Hand-eye needs the robot's TCP; intrinsics only needs
-    the camera, but the robot profile is still used when present.
-    """
-
-    kind: str = 'handeye'
-    eye: str = 'eye_in_hand'
-    camera: str = ''
-    # ``chessboard``: ``pattern`` = inner corners.  ``charuco``: ``squares`` =
-    # squares per side of the board in assets/board_charuco_300dpi.pdf.
-    board: str = 'chessboard'
-    pattern: list = field(default_factory=lambda: [9, 6])
-    squares: list = field(default_factory=lambda: [7, 10])
-    aruco_dict: str = 'DICT_5X5_100'
-    marker_size: float = 0.0
-    min_corners: int = 6
-    square_size: float = 0.025
-    min_samples: int = 8
-    path: str = ''
-    apply: bool = False
-    # Automated scanning: the host drives the arm through the pose list, checks
-    # the board at every stop and solves at the end.  Only for a single,
-    # host-controlled arm (not for a hardware-linked leader/follower pair) and
-    # requires --yes because it moves the robot.
-    auto: bool = False
-    poses: list = field(default_factory=list)
-    pose_count: int = 10
-    pose_delta_rad: float = 0.25
-    pose_seed: int = 0
-    settle_s: float = 0.8
-    speed_scale: float = 0.3
-    safety_path: str = ''
-    require_safety_envelope: bool = True
-    require_initial_board: bool = True
-    path_clearance_m: float = 0.01
-    quality_protocol: bool = False
-    action: str = 'solve'
-    frames_per_pose: int = 6
-    verify_samples: int = 8
-    verify_after: bool = False
-    solution_path: str = ''
-    intrinsics_mode: str = 'auto'
-    pose_plan_path: str = ''
+    # Button session (Joy-Con and/or keyboard): B start, A save, Y×2 discard.
+    # sample_seconds > 0 keeps the hands-free single-episode loop instead.
+    interactive: bool = True
+    joycon: bool = True
+    voice: bool = False
+    leader_timeout_s: float = 0.3
 
 
 @dataclass
@@ -372,6 +336,33 @@ def trajectory_root(task: TaskConfig, override: str = '') -> Path:
 def dataset_root(task: TaskConfig, override: str = '') -> Path:
     value = (override or task.collect.dataset_root or '').strip()
     return _path(value) if value else task_dir(task) / 'dataset'
+
+
+def lerobot_root(task: TaskConfig) -> Path:
+    value = (task.collect.lerobot_root or '').strip()
+    return _path(value) if value else task_dir(task) / 'lerobot'
+
+
+def _exporter(task: TaskConfig):
+    from .collect.export import isolated_exporter
+    name = str(task.collect.export).strip().lower()
+    if task.collect.isolated_export and name == 'lerobot':
+        return isolated_exporter(name)
+    return exporter_for(name)
+
+
+def _delete_last_episode(task: TaskConfig, collector) -> str:
+    """Remove the newest exported episode; refuses while exports are pending."""
+    from .collect.dataset_edit import delete_last_isolated
+    if collector.active:
+        return '正在录制，不能删除'
+    if collector.recorder.status().queued:
+        return '还有数据在导出，导出完成后再删'
+    try:
+        result = delete_last_isolated(collector.dataset_root)
+    except Exception as exc:
+        return f'删除失败：{exc}'
+    return f'已删除第 {result["deleted"] + 1} 条，数据集剩 {result["episodes"]} 条'
 
 
 def latest_trajectory(root: Path) -> str | None:
@@ -663,7 +654,7 @@ def run_collect(task: TaskConfig, name: str, mock: bool = False, yes: bool = Fal
             name_style=task.collect.feature_names)
         collector = EpisodeCollector(
             target, schema, robot=robot, gripper=gripper, cameras=cameras,
-            export=exporter_for(task.collect.export),
+            export=_exporter(task), dataset_root=lerobot_root(task),
             fps=float(task.collect.fps),
             # The replay loop already calls the hook at the dataset rate.
             # Do not apply a second wall-clock rate limit here: it would drop
@@ -798,6 +789,190 @@ def _run_session_episode(task: TaskConfig, robot, gripper, collector,
         return False
 
 
+def _master_slave_session(task: TaskConfig, robot, cameras, schema, root, fps) -> int:
+    """Button session over a passive leader/follower pair (Joy-Con or keyboard).
+
+    B starts, A saves, Y twice discards, Home prints status; recording refuses
+    to start while the leader is silent. Exports run after the session so they
+    never compete with the capture loop.
+    """
+    from .collect.passive import capture_leader_frame, leader_label, read_leader
+    from .teleop.announce import Announcer
+    from .teleop.session_input import DoublePress, SessionInput
+
+    opts = task.master_slave
+    voice = Announcer(opts.voice)
+    confirm = DoublePress(task.session.double_press_timeout_s)
+    collector = EpisodeCollector(
+        root, schema, robot=robot, cameras=cameras,
+        export=_exporter(task), dataset_root=lerobot_root(task), fps=fps,
+        min_interval_s=0.0, max_frames=int(task.collect.max_frames or 0),
+        compress=bool(task.collect.compress))
+    stats = dict(saved=0, discarded=0)
+    ep = {}
+    ui = dict(line=False, dropped=0)
+
+    def say(text, speech=None):
+        print(('\n' if ui['line'] else '') + text, flush=True)
+        ui['line'] = False
+        if speech:
+            voice.say(speech)
+
+    def line(text):
+        # Wide CJK text overflows fixed-width padding; clear to end of line instead.
+        print('\r' + text + '\x1b[K', end='', flush=True)
+        ui['line'] = True
+
+    def episodes_in_dataset():
+        info = collector.dataset_root / 'meta' / 'info.json'
+        try:
+            return int(json.loads(info.read_text(encoding='utf-8'))['total_episodes'])
+        except Exception:
+            return 0
+
+    def status():
+        leader = read_leader(robot, opts.leader_timeout_s)
+        grip = f'{leader["gripper"] * 1000:.1f}mm' if leader['gripper_ok'] else '无'
+        say(f'{state_line(robot)}\n主臂：{leader_label(leader)}，夹爪指令 {grip}\n'
+            f'本次：保存 {stats["saved"]} 条，丢弃 {stats["discarded"]} 条，导出中 '
+            f'{collector.recorder.status().queued} 条\n'
+            f'数据集：{collector.dataset_root}（共 {episodes_in_dataset()} 条）',
+            f'已保存 {stats["saved"]} 条，{leader_label(leader)}')
+
+    inputs = None
+    try:
+        if collector.hub is not None:
+            for camera in collector.hub:
+                if not camera.opened:
+                    camera.open()
+            if not collector.hub.warmup():
+                say('警告：相机 8 秒内未全部出图', '相机未就绪')
+        inputs = SessionInput(joycon=opts.joycon).start()
+        say(f'主从采集会话：{task.task}\n数据集：{collector.dataset_root}（已有 {episodes_in_dataset()} 条，本次追加）\n'
+            'B 开始录制 | A 结束保存 | Y×2 丢弃当前 | +×2 删除上一条 | Home 查看状态 | Ctrl+C 退出\n'
+            f'键盘同样可用：b / a / y / d / h，q 空闲时退出；语音{"开" if voice.available else "关"}',
+            '主从采集就绪，按 B 开始录制')
+        status()
+        period = 1.0 / max(fps, 1.0)
+        next_at = next_line = time.monotonic()
+        exported = errors = 0
+        while True:
+            name = inputs.get(timeout=max(0.0, next_at - time.monotonic()))
+            if inputs.dropped > ui['dropped']:
+                ui['dropped'] = inputs.dropped
+                say('程序卡顿期间的按键已忽略，请重新按。', '按键已忽略，请重按')
+            if name == 'b':
+                leader = read_leader(robot, opts.leader_timeout_s)
+                if collector.active:
+                    say('正在录制：A 保存，Y 按两次丢弃。', '正在录制')
+                elif not leader['ok']:
+                    say('未收到主臂指令：动一下主臂再按 B。', '未收到主臂指令')
+                else:
+                    confirm.reset()
+                    collector.start(task.task, meta={'source': 'master_slave',
+                                                      'leader_gripper_command': leader['gripper_ok']})
+                    ep.update(started=time.monotonic(), leader=0, follower_gripper=0, no_leader=0)
+                    say(f'● 开始录制第 {stats["saved"] + 1} 条', '开始录制')
+            elif name == 'a':
+                if not collector.active:
+                    say('当前没有在录制：按 B 开始。', '没有在录制')
+                elif collector.recorder.frames < 2:
+                    say('这条太短，继续录或 Y 按两次丢弃。', '太短')
+                else:
+                    frames = collector.recorder.frames
+                    seconds = time.monotonic() - ep['started']
+                    collector.stop(success=True)
+                    stats['saved'] += 1
+                    grip = ('主臂指令' if not ep['follower_gripper'] else
+                            f'从臂回退 {ep["follower_gripper"]} 帧')
+                    say(f'■ 第 {stats["saved"]} 条已保存：{frames} 帧，{seconds:.1f}s，'
+                        f'{frames / seconds:.1f} Hz；夹爪动作 {grip}；主臂缺失 {ep["no_leader"]} 帧',
+                        f'已保存第 {stats["saved"]} 条')
+            elif name == 'y':
+                if not collector.active:
+                    say('当前没有在录制。', '没有在录制')
+                elif confirm.confirm('y'):
+                    collector.discard()
+                    stats['discarded'] += 1
+                    say('已丢弃当前这条。', '已丢弃')
+                else:
+                    say('再按一次 Y 丢弃当前这条。', '再按一次丢弃')
+            elif name == 'home':
+                status()
+                if not collector.active:
+                    from .link_check import run_link_check
+                    _ok, summary = run_link_check(robot, cameras=cameras, log=say)
+                    voice.say(summary)
+            elif name == 'plus':
+                if collector.active:
+                    say('正在录制，不能删除。', '正在录制')
+                elif confirm.confirm('plus'):
+                    say('正在删除数据集最后一条……')
+                    say(_delete_last_episode(task, collector), '删除完成')
+                else:
+                    say(f'再按一次 +（键盘 d），删除数据集最后一条（第 {episodes_in_dataset()} 条）。',
+                        '再按一次删除上一条')
+            elif name == 'quit':
+                if collector.active:
+                    say('正在录制：先 A 保存或 Y×2 丢弃。', '正在录制')
+                else:
+                    break
+            now = time.monotonic()
+            if now < next_at:
+                continue
+            next_at = max(next_at + period, now - period)
+            if collector.active:
+                if collector.recorder.phase == 'error':
+                    say(f'录制出错：{collector.recorder.error}，已丢弃', '录制出错')
+                    collector.discard()
+                    stats['discarded'] += 1
+                    continue
+                try:
+                    ep[capture_leader_frame(robot, collector, schema,
+                                            max_age_s=opts.leader_timeout_s)] += 1
+                except DatasetError as exc:
+                    say(f'跳过一帧：{exc}')
+            if collector.saved > exported:
+                exported = collector.saved
+                say(f'导出完成：数据集共 {episodes_in_dataset()} 条', '导出完成')
+            if len(collector.export_errors) > errors:
+                for error in collector.export_errors[errors:]:
+                    say(f'导出失败：{error}', '导出失败，请看屏幕')
+                errors = len(collector.export_errors)
+            if now >= next_line:
+                next_line = now + 1.0
+                leader = read_leader(robot, opts.leader_timeout_s)
+                arm = leader_label(leader)
+                queued = collector.recorder.status().queued
+                if collector.active:
+                    seconds = now - ep['started']
+                    frames = collector.recorder.frames
+                    line(f'● 录制中 {seconds:5.1f}s {frames:5d} 帧 '
+                         f'{frames / seconds if seconds > .5 else 0:4.1f} Hz | {arm}'
+                         + (f' | 主臂缺失 {ep["no_leader"]}' if ep['no_leader'] else ''))
+                else:
+                    line(f'○ 待命（B 开始） | {arm} | 本次已保存 {stats["saved"]} 条'
+                         + (f' | 导出中 {queued}' if queued else ''))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if collector.active:
+            collector.discard()
+            stats['discarded'] += 1
+            say('中断：当前这条未保存。', '中断，未保存')
+        if inputs is not None:
+            inputs.stop()
+        queued = collector.recorder.status().queued
+        if queued:
+            say(f'等待后台导出 {queued} 条……（原始数据已在磁盘上）', f'正在导出 {queued} 条')
+        collector.close(timeout=3600.0)
+        for error in collector.export_errors[errors:]:
+            say(f'导出失败：{error}')
+        say(f'会话结束：保存 {stats["saved"]} 条，丢弃 {stats["discarded"]} 条，'
+            f'导出成功 {collector.saved} 条；数据集共 {episodes_in_dataset()} 条', '采集结束')
+    return 0
+
+
 def run_master_slave(task: TaskConfig, mock: bool = False,
                      dataset_override: str = '') -> int:
     """Sample a leader/follower pair passively; nothing is commanded."""
@@ -819,6 +994,12 @@ def run_master_slave(task: TaskConfig, mock: bool = False,
     root = dataset_root(task, dataset_override)
     print(f'主从采样（只读，不发送任何报文）：{task.task}  fps={fps:g}  '
           f'相机={schema.camera_names or "无"}  ->  {root}')
+    if task.master_slave.interactive and task.master_slave.sample_seconds <= 0:
+        try:
+            robot.connect()
+            return _master_slave_session(task, robot, cameras, schema, root, fps)
+        finally:
+            robot.disconnect()
     try:
         robot.connect()
         stats = sample_episodes(
@@ -839,37 +1020,12 @@ def run_master_slave(task: TaskConfig, mock: bool = False,
     return 0 if stats['saved'] else 1
 
 
-def _calibrate_poses(robot, cfg: CalibrateOptions) -> list[list[float]]:
-    """Explicit poses when configured, otherwise a seeded sweep around the start."""
-    if cfg.poses:
-        return [[float(value) for value in pose] for pose in cfg.poses]
-    import numpy as _np
-    state = robot.state()
-    if state.q is None:
-        raise DatasetError('robot has no joint feedback; cannot generate poses')
-    base = _np.asarray(state.q, dtype=float)
-    rng = _np.random.default_rng(int(cfg.pose_seed))
-    count = max(3, int(cfg.pose_count))
-    delta = max(0.02, float(cfg.pose_delta_rad))
-    poses = []
-    for candidate in range(count * 6):
-        if len(poses) >= count:
-            break
-        offset = rng.uniform(-delta, delta, size=base.shape)
-        offset[0] = 0.0                      # keep the base yaw
-        poses.append((base + offset).tolist())
-    return poses
-
-
-def _run_calibrate_auto(robot, camera, detector, session, cfg: CalibrateOptions,
+def _run_calibrate_auto(robot, camera, session, cfg: CalibrateOptions,
                         path, need: int, yes: bool) -> int:
-    """Drive the arm through the poses, detect the board, then solve once."""
+    """Task-level gate (confirmation, safety envelope) around calibrate.auto."""
     if not yes:
         print('自动标定会移动机械臂：确认工作区无人、急停在手后加 --yes')
         return 2
-    if cfg.pose_plan_path:
-        from .calibrate.plan_capture import run_plan
-        return run_plan(robot, camera, session, cfg, path)
     envelope = None
     if cfg.safety_path:
         try:
@@ -877,154 +1033,11 @@ def _run_calibrate_auto(robot, camera, detector, session, cfg: CalibrateOptions,
         except Exception as exc:
             print(f'安全包络加载失败：{exc}')
             return 2
-    elif cfg.require_safety_envelope:
+    elif cfg.require_safety_envelope and not cfg.pose_plan_path:
         print('自动标定必须配置 calibrate.safety_path')
         return 2
-    # Pose generation is relative to the actual arm state.  Connect first so
-    # the backend can provide joint feedback; this also makes failures explicit
-    # before any camera or motion work starts.
-    try:
-        robot.connect()
-        poses = _calibrate_poses(robot, cfg)
-    except Exception as exc:
-        print(f'无法生成标定位姿：{exc}')
-        try:
-            robot.disconnect()
-        except Exception:
-            pass
-        return 2
-    if envelope is not None:
-        workspace = getattr(robot, 'workspace', None)
-        if workspace is not None:
-            try:
-                state = robot.state()
-                deadline = time.monotonic() + 3.0
-                while (state.q is None or state.tcp is None) and time.monotonic() < deadline:
-                    time.sleep(.02)
-                    state = robot.state()
-                workspace.check_feedback(state)
-                safe_poses = []
-                previous = state.q
-                for pose in poses:
-                    try:
-                        if robot.guard.limits.violates(pose):
-                            continue
-                        workspace.check_path(previous, pose, clearance_m=cfg.path_clearance_m)
-                    except Exception:
-                        continue
-                    safe_poses.append(pose)
-                    previous = pose
-            except Exception as exc:
-                print(f'末端空间预检失败：{exc}')
-                robot.disconnect()
-                return 2
-        else:
-            safe_poses = [pose for pose in poses if envelope.contains_q(pose)]
-        if len(safe_poses) < len(poses):
-            print(f'安全包络过滤：{len(poses) - len(safe_poses)} 个位姿越界，拒绝执行')
-        poses = safe_poses
-    if len(poses) < need:
-        print(f'安全范围内候选位姿少于目标 {need}，拒绝自动标定')
-        robot.disconnect()
-        return 2
-    print(f'自动标定：{len(poses)} 个位姿，速度 {cfg.speed_scale:g}，'
-          f'每处停 {cfg.settle_s:g}s；目标 ≥{need} 组')
-    quality_views = []
-    try:
-        if not camera.opened:
-            camera.open()
-        if cfg.require_initial_board:
-            print('自动标定预检：等待相机出图并检查当前位姿是否看到标定板……')
-            deadline = time.monotonic() + 8.0
-            visible = False
-            while time.monotonic() < deadline:
-                frame = camera.snapshot()
-                if frame.rgb is not None:
-                    try:
-                        visible = detector.detect(frame.rgb) is not None
-                    except Exception as exc:
-                        print(f'标定板检测失败：{exc}')
-                        return 2
-                    if visible:
-                        break
-                time.sleep(0.05)
-            if not visible:
-                print('预检失败：当前位姿看不到有效标定板，未执行任何自动运动。')
-                return 2
-            print('预检通过：当前位姿已检测到标定板。')
-        if not robot.prepare_motion():
-            raise CalibrationError('controller did not become ready for motion')
-        for index, pose in enumerate(poses, 1):
-            if getattr(robot, 'protective_stop', lambda: False)():
-                print('检测到保护性停止，终止自动标定')
-                break
-            try:
-                if not robot.move_j(pose, speed=float(cfg.speed_scale), wait=True):
-                    raise CalibrationError('move did not settle')
-            except Exception as exc:
-                robot.stop_motion()
-                print(f'[{index}/{len(poses)}] 运动失败：{exc}，终止采集')
-                break
-            time.sleep(max(0.0, float(cfg.settle_s)))
-            if cfg.quality_protocol:
-                from .calibrate.protocol import capture_station
-                try:
-                    view = capture_station(session, frames=cfg.frames_per_pose)
-                except Exception as exc:
-                    robot.stop_motion()
-                    print(f'采集失败，保留已采数据：{exc}')
-                    break
-                if view is not None:
-                    quality_views.append(view)
-                print(f'[{index}/{len(poses)}] 有效位姿 {len(quality_views)}/{need}')
-                if len(quality_views) >= need:
-                    break
-                continue
-            frame = camera.snapshot()
-            if frame.rgb is None:
-                print(f'[{index}/{len(poses)}] 无图像，跳过')
-                continue
-            if cfg.kind == 'intrinsics':
-                observation = detector.detect(frame.rgb)
-                if observation is not None:
-                    session.views.append(observation.view)
-                    session.images.append(frame.rgb)
-            else:
-                try:
-                    observation = session.capture(image=frame.rgb)
-                except Exception as exc:
-                    print(f'[{index}/{len(poses)}] 采集失败：{type(exc).__name__}: {exc}')
-                    continue
-            if observation is None:
-                print(f'[{index}/{len(poses)}] 没检测到棋盘，跳过')
-                continue
-            count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
-            print(f'[{index}/{len(poses)}] 采集 {count}/{need}')
-            if count >= need:
-                break
-    except KeyboardInterrupt:
-        print('中断')
-    finally:
-        try:
-            camera.close()
-        except Exception:
-            pass
-        try:
-            robot.disconnect()
-        except Exception:
-            pass
-
-    if cfg.quality_protocol:
-        from .calibrate.protocol import finish
-        return finish(session, cfg, path, quality_views)
-    count = len(session.views) if cfg.kind == 'intrinsics' else len(session.base_tcp)
-    if count < need:
-        print(f'样本不足（{count}），没有保存')
-        return 1
-    summary = session.save(path, camera_name=camera.name, apply=bool(cfg.apply))
-    print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
-    print(f'已写入 {summary["path"]}')
-    return 0
+    from .calibrate.auto import run_auto
+    return run_auto(robot, camera, session, cfg, path, need, envelope=envelope)
 
 
 def run_calibrate(task: TaskConfig, mock: bool = False,
@@ -1090,7 +1103,7 @@ def run_calibrate(task: TaskConfig, mock: bool = False,
         path = path.parent / datetime.now().strftime('%Y%m%d_%H%M%S_%f') / path.name
 
     if cfg.auto:
-        return _run_calibrate_auto(robot, camera, detector, session, cfg, path, need, yes)
+        return _run_calibrate_auto(robot, camera, session, cfg, path, need, yes)
 
     print(f'标定：camera={camera.name}  kind={cfg.kind}  eye={cfg.eye}  board={cfg.board}')
     if cfg.board == 'charuco':
@@ -1190,16 +1203,19 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
     print(f'Joy-Con 常驻会话：{task.task}')
     print(f'轨迹目录：{root}')
     print(f'数据集根目录：{target}')
+    print(f'LeRobot 数据集：{lerobot_root(task)}（跨会话追加）')
     print('B 开始示教 | A 结束保存 | X×2 回放并采集 | Y×2 删除上一条轨迹 | '
-          'Home 查看状态 | Ctrl+C 退出', flush=True)
+          '+×2 删除数据集最后一条 | Home 查看状态 | Ctrl+C 退出', flush=True)
 
     robot = None
     gripper = None
     collector = None
     hub = None
     last_name = latest_trajectory(root)
-    confirm_x_until = 0.0
-    confirm_y_until = 0.0
+    from .teleop.announce import Announcer
+    from .teleop.session_input import DoublePress
+    voice = Announcer(task.session.voice)
+    confirm = DoublePress(task.session.double_press_timeout_s)
     try:
         robot, gripper, cameras = _build_runtime(task, mock)
         robot.connect()
@@ -1212,20 +1228,21 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
             name_style=task.collect.feature_names)
         collector = EpisodeCollector(
             target, schema, robot=robot, gripper=gripper, cameras=cameras,
-            export=exporter_for(task.collect.export),
+            export=_exporter(task), dataset_root=lerobot_root(task),
             fps=float(task.collect.fps), min_interval_s=0.0,
             compress=bool(task.collect.compress))
         hub = ButtonHub()
         hub.start()
+        voice.say('示教会话就绪，按 B 开始示教')
         while True:
             try:
                 button, _stamp = hub.events.get(timeout=0.1)
             except queue.Empty:
                 continue
-            now = time.monotonic()
             if button == 'b':
                 name = _next_session_name(task, root)
-                confirm_x_until = confirm_y_until = 0.0
+                confirm.reset()
+                voice.say('开始示教')
                 # Do not let a stale A from the previous teach stop this one.
                 while True:
                     try:
@@ -1243,14 +1260,17 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
                 )
                 if trajectory is None:
                     print('本次示教已放弃。', flush=True)
+                    voice.say('示教已放弃')
                     continue
                 motion = joint_motion(trajectory)
                 if motion < 1e-4 and not task.teach.allow_static:
                     print(f'轨迹几乎静止（{motion:.4f} rad），未保存。', flush=True)
+                    voice.say('轨迹几乎静止，未保存')
                     continue
                 save_trajectory(root / name, trajectory)
                 last_name = name
                 print(f'已保存轨迹：{root / name}', flush=True)
+                voice.say('轨迹已保存')
                 if task.session.auto_replay:
                     _run_session_episode(task, robot, gripper, collector, name,
                                          task.session.replay_speed_scale)
@@ -1260,11 +1280,11 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
                 if last_name is None:
                     print('还没有可回放的轨迹。', flush=True)
                     continue
-                if task.session.confirm_replay and now > confirm_x_until:
-                    confirm_x_until = now + float(task.session.double_press_timeout_s)
+                if task.session.confirm_replay and not confirm.confirm('x'):
                     print(f'再按一次 X，回放并采集 {last_name}。', flush=True)
+                    voice.say('再按一次 X 回放采集')
                     continue
-                confirm_x_until = 0.0
+                voice.say('开始回放采集')
                 _run_session_episode(task, robot, gripper, collector, last_name,
                                      task.session.replay_speed_scale)
             elif button == 'y':
@@ -1273,22 +1293,34 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
                 if last_name is None:
                     print('没有可删除的示教轨迹。', flush=True)
                     continue
-                if now > confirm_y_until:
-                    confirm_y_until = now + float(task.session.double_press_timeout_s)
+                if not confirm.confirm('y'):
                     print(f'再按一次 Y，删除轨迹 {last_name}。', flush=True)
+                    voice.say('再按一次 Y 删除')
                     continue
-                confirm_y_until = 0.0
                 shutil.rmtree(root / last_name, ignore_errors=True)
                 print(f'已删除轨迹：{root / last_name}', flush=True)
+                voice.say('轨迹已删除')
                 last_name = latest_trajectory(root)
             elif button == 'r':
                 home = (task.robot.get('options', {}) or {}).get('home_joints')
                 if home:
                     print('缓慢回默认姿态……', flush=True)
                     robot.move_j(home, speed=0.2, accel=0.25, wait=True)
+            elif button == 'plus':
+                if not confirm.confirm('plus'):
+                    print('再按一次 +，删除数据集最后一条。', flush=True)
+                    voice.say('再按一次删除上一条')
+                    continue
+                message = _delete_last_episode(task, collector)
+                print(message, flush=True)
+                voice.say(message)
             elif button == 'home':
+                from .link_check import run_link_check
                 print(state_line(robot, gripper), flush=True)
                 print(f'当前上一条轨迹：{last_name or "(none)"}', flush=True)
+                _ok, summary = run_link_check(robot, gripper, cameras,
+                                              log=lambda text: print(text, flush=True))
+                voice.say(summary)
     except KeyboardInterrupt:
         print('\n结束 Joy-Con 会话。', flush=True)
         return 0
@@ -1325,6 +1357,8 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
     print(f'轨迹目录：{root}')
     print(f'轨迹名称：{name or "(自动生成/使用最新)"}')
     print(f'数据集根目录：{dataset_root(task, dataset_override)}')
+    print(f'LeRobot 数据集（跨会话追加）：{lerobot_root(task)}  '
+          f'导出：{"独立子进程" if task.collect.isolated_export else "采集进程内"}')
     print(f'相机：{len(task.collect.cameras)} 个'
           + (f" ({', '.join(str(item.get('name', 'camera')) for item in task.collect.cameras)})"
              if task.collect.cameras else '（仅关节/夹爪）'))
@@ -1343,8 +1377,13 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
         cap = ('单条不限帧数' if not task.collect.max_frames
                else f'单条上限 {task.collect.max_frames} 帧')
         start = '启动即录' if task.master_slave.auto_record else '按空格开始'
-        print(f'主从采样：fps={task.master_slave.fps:g}，{start}，{duration}，{cap}')
-        print('按键：空格 结束并保存（再按开始下一条），x 丢弃当前，q 退出')
+        if task.master_slave.interactive and task.master_slave.sample_seconds <= 0:
+            print(f'主从采样：fps={task.master_slave.fps:g}，按键会话，{cap}')
+            print('按键：B 开始录制 | A 结束保存 | Y×2 丢弃当前 | +×2 删除数据集最后一条 | '
+                  'Home 查看状态 | Ctrl+C 退出（键盘 b / a / y / d / h，q 空闲时退出）')
+        else:
+            print(f'主从采样：fps={task.master_slave.fps:g}，{start}，{duration}，{cap}')
+            print('按键：空格 结束并保存（再按开始下一条），x 丢弃当前，q 退出')
     if mode == 'calibrate':
         cfg = task.calibrate
         target = Path(cfg.path) if cfg.path else task_dir(task) / 'calibration.json'

@@ -9,10 +9,59 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
+
 from ..errors import DatasetError
 from ..teach.console import KeyReader
 from .schema import DatasetSchema
 from .session import EpisodeCollector
+
+
+def read_leader(robot, max_age_s: float = 0.3) -> dict:
+    """Leader joints and gripper command; ``ok`` means a command has been received.
+
+    A stationary Piper leader stops sending control frames, so its last command
+    stays valid; ``moving`` only says whether frames arrived within ``max_age_s``.
+    """
+    if hasattr(robot, 'leader_feedback'):
+        fb = dict(robot.leader_feedback())
+    else:
+        fb = dict(q=robot.leader_joint_angles(), q_age_s=None, gripper=None, gripper_age_s=None)
+    age = fb.get('q_age_s')
+    fb['ok'] = fb.get('q') is not None
+    fb['moving'] = fb['ok'] and age is not None and age <= max_age_s
+    fb['gripper_ok'] = fb.get('gripper') is not None
+    return fb
+
+
+def leader_label(leader: dict) -> str:
+    if not leader['ok']:
+        return '未收到主臂指令（动一下主臂）'
+    return '主臂动作中' if leader['moving'] else '主臂静止'
+
+
+def capture_leader_frame(robot, collector, schema: DatasetSchema, sample=None,
+                         max_age_s: float = 0.3) -> str:
+    """Record follower state as observation and the leader command as action.
+
+    The gripper action is the leader's gripper command when it is on the bus;
+    the follower width only stands in (and is flagged per frame) otherwise.
+    Returns 'leader', 'follower_gripper' or 'no_leader' (frame not recorded).
+    """
+    sample = robot.state() if sample is None else sample
+    leader = read_leader(robot, max_age_s)
+    if not leader['ok']:
+        return 'no_leader'
+    use_leader = leader['gripper_ok']
+    grip = leader['gripper'] if use_leader else sample.extra.get('gripper_width')
+    extra = {'leader_gripper': np.float32(np.nan if leader['gripper'] is None
+                                          else leader['gripper']),
+             'action_gripper_from_leader': np.int8(use_leader),
+             'leader_age_s': np.float32(np.nan if leader.get('q_age_s') is None
+                                        else leader['q_age_s'])}
+    collector.capture_state(state=sample, action=schema.observation(leader['q'], grip),
+                            extra=extra)
+    return 'leader' if use_leader else 'follower_gripper'
 
 
 def sample_episodes(robot, schema: DatasetSchema, root, *, cameras=(), export=None,
@@ -93,11 +142,8 @@ def sample_episodes(robot, schema: DatasetSchema, root, *, cameras=(), export=No
                 time.sleep(0.02)
                 continue
             if collector.active:
-                grip = sample.extra.get('gripper_width')
-                leader = robot.leader_joint_angles()
-                action = None if leader is None else schema.observation(leader, grip)
                 try:
-                    collector.capture_state(state=sample, action=action)
+                    capture_leader_frame(robot, collector, schema, sample)
                 except DatasetError as exc:
                     stats['skipped'] += 1
                     if stats['skipped'] == 1:

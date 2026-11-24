@@ -61,6 +61,83 @@
         "hand_eye_residual": 0.015021642795277011,
         "hand_eye_mode": "eye_in_hand"
       }
+    },
+    "external_camera": {
+      "name": "external_camera",
+      "intrinsics": [
+        [
+          606.0539487016646,
+          0.0,
+          318.6291550367808
+        ],
+        [
+          0.0,
+          605.4072555577447,
+          248.34958210837527
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "distortion": [
+        0.09488138832763032,
+        -0.1145129250710081,
+        -0.0012297792640869427,
+        -0.004896606913282766,
+        -0.3461417146209271
+      ],
+      "tcp_camera": null,
+      "base_camera": [
+        [
+          0.7151913774132327,
+          0.5189814282486668,
+          -0.46814481819917314,
+          0.6469624011206868
+        ],
+        [
+          0.6979233210245083,
+          -0.5662060317874515,
+          0.4385359364266843,
+          -0.2521803989126916
+        ],
+        [
+          -0.037474413189324485,
+          -0.6403663066561838,
+          -0.7671549137270999,
+          0.5194130018952182
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "width": 640,
+      "height": 480,
+      "updated": "2026-11-17T16:50:46",
+      "meta": {
+        "hand_eye_mode": "eye_to_hand",
+        "serial": "262522071417",
+        "source": "/home/jz/ws/outputs/robot_tasks/piper_calibrate_eye_to_hand/20261117_164209_981413",
+        "board": {
+          "pattern": "charuco",
+          "squares": [
+            7,
+            10
+          ],
+          "square_size": 0.026,
+          "marker_size": 0.0195,
+          "aruco_dict": "DICT_5X5_100"
+        },
+        "verify_mean_rms_px": 1.964,
+        "verify_status": "warning",
+        "verify_depth_mm": 1.049,
+        "heldout_refit_drift_mm": 4.73,
+        "independent_verified": false
+      }
     }
   }
 }

@@ -9,7 +9,7 @@ import pytest
 
 import robot_toolkit.task_runner as task_runner
 from robot_toolkit.task_runner import (dataset_root, execute,
-                                       load_task_config,
+                                       load_task_config, lerobot_root,
                                        trajectory_root)
 from robot_toolkit.teach import Trajectory, save_trajectory
 
@@ -69,10 +69,9 @@ def test_collect_mode_replays_and_writes_dataset(tmp_path):
 
     code = execute(config, mode='collect', name=name, mock=True, yes=True)
     assert code == 0
-    dataset = dataset_root(config)
-    takes = list(dataset.glob('*/dataset/episodes.jsonl'))
-    assert takes, f'no manifest under {dataset}'
-    assert json.loads(takes[0].read_text(encoding='utf-8').splitlines()[0])['task'] == 'unit task'
+    manifest = lerobot_root(config) / 'episodes.jsonl'
+    assert manifest.exists(), f'no manifest at {manifest}'
+    assert json.loads(manifest.read_text(encoding='utf-8').splitlines()[0])['task'] == 'unit task'
 
 
 def test_teach_mode_saves_a_trajectory(monkeypatch, tmp_path):
@@ -175,7 +174,7 @@ def test_session_loops_teach_then_replay_collect(monkeypatch, tmp_path):
     assert task_runner.run_session(config, mock=True) == 0
     assert fake_hub.stopped
     assert (trajectory_root(config) / 'unit_01' / 'trajectory.json').exists()
-    assert list(dataset_root(config).glob('*/dataset/episodes.jsonl'))
+    assert (lerobot_root(config) / 'episodes.jsonl').exists()
 
 
 def test_collect_mode_can_capture_a_mock_camera(tmp_path):
@@ -309,18 +308,20 @@ def test_calibrate_config_validation(tmp_path):
     assert execute(task, mode='calibrate', mock=True, dry_run=True) == 0
 
 
-def test_auto_calibration_requires_confirmation(tmp_path):
+def test_auto_calibration_requires_confirmation(tmp_path, capsys):
     path = _write_calibrate_config(
         tmp_path / 'cal_auto.json', tmp_path,
         cameras=[{'kind': 'mock', 'name': 'wrist_camera', 'width': 32,
                   'height': 24, 'fps': 30}])
     payload = json.loads(path.read_text(encoding='utf-8'))
-    payload['calibrate'].update({'auto': True, 'pose_count': 3, 'settle_s': 0.0})
+    payload['calibrate'].update({'auto': True, 'pose_count': 3, 'settle_s': 0.0,
+                                 'require_safety_envelope': False})
     path.write_text(json.dumps(payload), encoding='utf-8')
     config = load_task_config(str(path))
 
     # Moving the arm needs an explicit --yes; without it the mode refuses.
     assert execute(config, mock=True) == 2
-    # With --yes it runs the sweep and reports the missing samples instead of
-    # crashing (mock camera sees no board and mock robot has no TCP).
-    assert execute(config, mock=True, yes=True) == 1
+    assert '--yes' in capsys.readouterr().out
+    # With --yes the preflight still refuses before any motion: the mock robot has no TCP.
+    assert execute(config, mock=True, yes=True) == 2
+    assert '预检失败，未运动' in capsys.readouterr().out

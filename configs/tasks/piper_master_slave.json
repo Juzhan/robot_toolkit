@@ -34,7 +34,17 @@
         "width": 640,
         "height": 480,
         "fps": 30,
-        "depth": true
+        "depth": true,
+        "serial": "263022075825"
+      },
+      {
+        "kind": "realsense",
+        "name": "external_camera",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "depth": true,
+        "serial": "262522071417"
       }
     ]
   },

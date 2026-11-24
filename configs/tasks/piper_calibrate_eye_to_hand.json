@@ -1,0 +1,91 @@
+{
+  "slug": "piper_calibrate_eye_to_hand",
+  "task": "piper external camera calibration, board held in gripper (auto sweep)",
+  "mode": "calibrate",
+  "name": "",
+  "root": "outputs/robot_tasks",
+  "robot": {
+    "kind": "agx_piper",
+    "name": "piper_x",
+    "options": {
+      "model": "piper_x",
+      "interface": "auto",
+      "channel": "auto",
+      "firmware": "default",
+      "enable_on_connect": false,
+      "configure_on_connect": true,
+      "speed_percent": 20,
+      "has_gripper": true
+    },
+    "limits": {
+      "max_velocity": 1.0,
+      "max_step_rad": 0.8,
+      "workspace": {
+        "lower_m": [0.0116, -0.1729, 0.2730],
+        "upper_m": [0.5505, 0.2338, 0.6496],
+        "margin_m": 0.03,
+        "step_rad": 0.01,
+        "lower_enabled": [false, true, true],
+        "upper_enabled": [false, true, false]
+      }
+    },
+    "safety": true
+  },
+  "gripper": {
+    "kind": "none"
+  },
+  "collect": {
+    "repo_id": "local/piper_calibrate_eye_to_hand",
+    "fps": 30.0,
+    "export": "manifest",
+    "cameras": [
+      {
+        "kind": "realsense",
+        "name": "external_camera",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "depth": true,
+        "serial": "262522071417"
+      }
+    ]
+  },
+  "calibrate": {
+    "kind": "handeye",
+    "eye": "eye_to_hand",
+    "camera": "external_camera",
+    "board": "charuco",
+    "squares": [7, 10],
+    "square_size": 0.026,
+    "marker_size": 0.0195,
+    "aruco_dict": "DICT_5X5_100",
+    "min_corners": 6,
+    "min_samples": 27,
+    "quality_protocol": true,
+    "frames_per_pose": 6,
+    "verify_samples": 8,
+    "verify_after": true,
+    "intrinsics_mode": "auto",
+    "path": "",
+    "apply": false,
+    "auto": true,
+    "poses": [],
+    "pose_plan_path": "",
+    "pose_count": 3000,
+    "pose_delta_rad": 0.45,
+    "pose_seed": 0,
+    "settle_s": 3.0,
+    "speed_scale": 0.2,
+    "path_clearance_m": 0.0,
+    "held_object_radius_m": 0.5,
+    "held_object_drop_m": 0.04,
+    "held_object_reference_q": [0.397586, 0.898181, -1.038436, 1.043567, 0.292831, -1.001819],
+    "clamp_force_n": 2.0,
+    "clamp_slip_m": 0.003,
+    "board_jitter_px": 0.3,
+    "capture_timeout_s": 8.0,
+    "safety_path": "outputs/robot_tasks/safety_envelope/safety_envelope.json",
+    "require_safety_envelope": true,
+    "require_initial_board": true
+  }
+}

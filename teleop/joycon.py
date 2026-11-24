@@ -83,14 +83,31 @@ class EnableLatch:
         return action
 
 
+def ensure_joyconrobotics_path(repo_root=None) -> bool:
+    """Make ``joyconrobotics`` importable: installed copy first, then the bundled one.
+
+    Returns False when neither exists. The library itself still needs ``hidapi``
+    and ``PyGLM`` at import time.
+    """
+    import importlib.util
+    if importlib.util.find_spec('joyconrobotics') is not None:
+        return True
+    package = Path(__file__).resolve().parents[1]
+    candidates = [package / 'third_party' / 'joycon-robotics']
+    if repo_root:
+        root = Path(repo_root).resolve()
+        candidates += [root / 'projects' / 'joycon-robotics', root / 'joycon-robotics']
+    for candidate in candidates:
+        if (candidate / 'joyconrobotics').is_dir():
+            if str(candidate) not in sys.path:
+                sys.path.insert(0, str(candidate))
+            return True
+    return False
+
+
 def load_joyconrobotics(repo_root=None):
-    """Import ``joyconrobotics`` from ``projects/joycon-robotics``."""
-    root = Path(repo_root).resolve() if repo_root else Path(__file__).resolve().parents[3]
-    candidate = root / 'projects' / 'joycon-robotics'
-    if not candidate.exists():
-        candidate = root / 'joycon-robotics'
-    if str(candidate) not in sys.path:
-        sys.path.insert(0, str(candidate))
+    """Import ``JoyconRobotics`` (installed, bundled or from ``repo_root``)."""
+    ensure_joyconrobotics_path(repo_root)
     from joyconrobotics import JoyconRobotics  # noqa: WPS433 (dynamic path)
     return JoyconRobotics
 

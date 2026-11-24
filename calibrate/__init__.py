@@ -7,8 +7,15 @@ from .intrinsics import (IntrinsicsResult, calibrate_checkerboard, estimate_intr
 from .session import (BoardObservation, CalibrationSession, CharucoDetector,
                       ChessboardDetector)
 from .store import CalibrationStore, CameraCalibration
+from .options import CalibrateOptions
+from .auto import run_auto, run_stations, screen, sweep_poses
 
 __all__ = [
+    'CalibrateOptions',
+    'run_auto',
+    'run_stations',
+    'screen',
+    'sweep_poses',
     'HandEyeResult',
     'camera_pose_from_robot',
     'solve_hand_eye',

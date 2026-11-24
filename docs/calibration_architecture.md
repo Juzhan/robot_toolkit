@@ -6,8 +6,10 @@
 |---|---|---|
 | 数学与数据 | `calibrate/quality.py`、`identity.py` | 相机/板身份、求解、独立验证、重投影叠图；无机器人 SDK |
 | 视角规划 | `calibrate/view_plan.py` | 通过 FK 回调和工作空间约束生成固定 train/verify 清单 |
-| 通用安全 | `core/safety_envelope.py`、`workspace_guard.py` | 示教范围存储、启用轴约束、离散关节路径的 TCP 检查 |
-| 采集编排 | `calibrate/protocol.py`、`plan_capture.py` | 新帧聚合、停稳检查、清单执行、数据与报告保存 |
+| 通用安全 | `core/safety_envelope.py`、`workspace_guard.py` | 示教范围存储、启用轴约束、离散关节路径的 TCP 检查、夹持物整体高度检查 `held_object_slack` |
+| 采集编排 | `calibrate/protocol.py` | 新帧聚合、机械臂与标定板双重停稳检查、数据与报告保存 |
+| 自动执行 | `calibrate/auto.py`（`plan_capture.py` 为兼容入口） | 位姿来源（随机扫描 / 固定清单）→ 统一安全筛选 → 预检、使能、夹紧、逐站运动、防滑、采集；眼在手上/手外共用 |
+| 配置 | `calibrate/options.py` | `CalibrateOptions`，对应任务 JSON 的 `calibrate` 段 |
 | 设备适配 | `robot/*`、`camera/*` | SDK、协议、单位与坐标约定转换 |
 | 任务配置 | `profiles.py`、`task_runner.py`、`configs/tasks/*` | 选择设备与参数；安全设置和标定是独立任务 |
 
@@ -38,6 +40,11 @@
 
 ## 采集与验收
 
+两种自动来源只在策略上不同：随机扫描剔除不安全位姿、未采到的站跳过；
+固定清单要求全部位姿通过当前安全检查、任何一站失败即中止，不替换样本角色。
+夹着标定板时设置 `held_object_radius_m`（不小于板上最远点到 TCP 的距离）和
+`held_object_drop_m`，此时运动改用主机侧关节线性插补，与筛选假设一致；
+`clamp_force_n` 夹紧并逐站检查开度，`board_jitter_px` 要求板子自身停稳再采。
 保留本次协议：旧版 7×10 ChArUco、26 mm 方格、19.5 mm 标记、
 DICT_5X5_100；27 个训练位姿、8 个独立验证位姿，每位姿 6 帧，停稳 3 秒。
 固定清单失败即停止，不把验证位姿补进训练集。原始图像、观测、清单、

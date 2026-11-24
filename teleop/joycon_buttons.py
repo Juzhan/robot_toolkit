@@ -20,10 +20,8 @@ BUTTONS = ('get_button_a', 'get_button_b', 'get_button_x', 'get_button_y',
 
 def connect_joycon():
     """Connect a right (preferred) or left Joy-Con; return ``None`` on failure."""
-    root = Path(__file__).resolve().parents[3]
-    library = str(root / 'projects' / 'joycon-robotics')
-    if library not in sys.path:
-        sys.path.insert(0, library)
+    from .joycon import ensure_joyconrobotics_path
+    ensure_joyconrobotics_path()
     from joyconrobotics.joycon import JoyCon
 
     class RobustJoyCon(JoyCon):
@@ -100,16 +98,15 @@ class ButtonHub(threading.Thread):
             if self.joycon is None:
                 self.joycon = self._connect()
                 if self.joycon is None:
-                    now = time.monotonic()
-                    if now - last_notice > 30.0:
-                        print('Joy-Con 未连接（按一下手柄任意键唤醒），每 2 秒重试……',
-                              flush=True)
-                        last_notice = now
+                    if not last_notice:
+                        # Clear any in-place status line this thread would otherwise append to.
+                        print('\r\x1b[KJoy-Con 未连接（按一下手柄任意键唤醒），后台每 2 秒重试', flush=True)
+                        last_notice = time.monotonic()
                     if self._stop_event.wait(2.0):
                         break
                     continue
                 last_notice = 0.0
-                print('Joy-Con 已连接，按键就绪。', flush=True)
+                print('\r\x1b[KJoy-Con 已连接，按键就绪。', flush=True)
                 time.sleep(0.3)
                 for name in BUTTONS:
                     try:

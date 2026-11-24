@@ -20,6 +20,30 @@ from .recorder import EpisodeRecorder
 from .schema import DatasetSchema
 
 
+def frame_timing(frames, state=None) -> dict:
+    """Per-row timing evidence stored beside the frame (``time_`` prefix).
+
+    Host times are ``perf_counter`` seconds (camera publish); hardware times are
+    the sensor's own clock with its RealSense time domain. Missing values are
+    NaN / -1 so every row has the same keys.
+    """
+    row = {'time_capture_host': np.float64(time.perf_counter())}
+    if state is not None:
+        tcp = getattr(state, 'tcp', None)
+        row['time_robot_state'] = np.float64(getattr(state, 't', np.nan))
+        row['time_robot_tcp'] = (np.full(6, np.nan) if tcp is None
+                                 else np.asarray(tcp, dtype=np.float64).reshape(-1)[:6])
+    for name, frame in (frames or {}).items():
+        for stream in ('color', 'depth'):
+            meta = (getattr(frame, 'meta', None) or {}).get(stream) or {}
+            prefix = f'time_{name}_{stream}'
+            row[f'{prefix}_host'] = np.float64(meta.get('host_time', np.nan))
+            row[f'{prefix}_hw_ms'] = np.float64(meta.get('hw_time_ms', np.nan))
+            row[f'{prefix}_domain'] = np.int64(meta.get('time_domain', -1))
+            row[f'{prefix}_frame_number'] = np.int64(meta.get('frame_number', -1))
+    return row
+
+
 class EpisodeCollector:
     """Collect LeRobot-compatible episodes from any ``RobotBackend``.
 
@@ -32,7 +56,8 @@ class EpisodeCollector:
                  min_interval_s: float = 0.0, clock=time.monotonic,
                  max_frames: int | None = None, compress: bool = False,
                  synchronize: bool = False, sync_max_skew_s: float = 0.05,
-                 sync_max_frame_age_s: float = 0.3):
+                 sync_max_frame_age_s: float = 0.3, export_mode: str = 'background',
+                 dataset_root=None):
         self.schema = schema
         self.robot = robot
         self.gripper = gripper
@@ -47,13 +72,15 @@ class EpisodeCollector:
         self.min_interval_s = max(0.0, float(min_interval_s))
         self.clock = clock
         self._last_capture = -1e9
-        recorder_kwargs = {'compress': bool(compress)}
+        recorder_kwargs = {'compress': bool(compress), 'export_mode': export_mode,
+                           'dataset_root': dataset_root}
         if max_frames is not None:
             recorder_kwargs['max_frames'] = int(max_frames)
         self.recorder = EpisodeRecorder(root, schema, export=export, fps=fps,
                                         **recorder_kwargs)
         self._started = False
         self._last_state = None
+        self._last_frames = {}
 
     @property
     def active(self) -> bool:
@@ -70,6 +97,15 @@ class EpisodeCollector:
     @property
     def export_errors(self) -> list:
         return self.recorder.export_errors
+
+    @property
+    def pending_exports(self) -> int:
+        return len(self.recorder.pending)
+
+    def export_pending(self) -> int:
+        """Export deferred episodes now (spooled frames are flushed first)."""
+        self.recorder.flush()
+        return self.recorder.process_pending()
 
     def start(self, task: str, meta: dict | None = None) -> Path:
         if self.hub is not None:
@@ -94,6 +130,7 @@ class EpisodeCollector:
         if self.hub is None:
             return {}, {}, {}
         frames = self.hub.snapshot(strict=strict)
+        self._last_frames = frames
         images, depth = {}, {}
         for name, frame in frames.items():
             if frame.rgb is not None:
@@ -165,8 +202,11 @@ class EpisodeCollector:
         if synchronized is not None:
             images, depth = split_camera_frames(synchronized['frames'])
             image_ids = self._frame_ids(synchronized['frames'])
+            frames = synchronized['frames']
         else:
             images, depth, image_ids = self._camera_payload(strict=strict_cameras)
+            frames = self._last_frames if self.hub is not None else {}
+        extra = {**frame_timing(frames, state), **(extra or {})}
         self._last_capture = now
         self._last_state = state
         return self.recorder.capture(observation, action_vector,
@@ -187,6 +227,8 @@ class EpisodeCollector:
         if now - self._last_capture < self.min_interval_s:
             return True
         images, depth, image_ids = self._camera_payload(strict=strict_cameras)
+        extra = {**frame_timing(self._last_frames if self.hub is not None else {}),
+                 **(extra or {})}
         self._last_capture = now
         return self.recorder.capture(np.asarray(observation, dtype=np.float32),
                                      np.asarray(action, dtype=np.float32),

@@ -15,6 +15,7 @@ from __future__ import annotations
 import gc
 import inspect
 import json
+import os
 import shutil
 import time
 import uuid
@@ -163,6 +164,40 @@ def _swap_dataset(stage: Path, root: Path) -> None:
     # projects' behaviour.  The next export replaces this backup.
 
 
+def _write_timestamps(stage: Path, episode: int, timing: dict, rows: int, fps: float) -> dict:
+    """Write ``timestamps/episode_NNNNNN.npz`` and return a timeline summary.
+
+    Only rows that carried every timing key are written; older takes without
+    timing return ``{'available': False}``. Camera summaries count repeated and
+    skipped sensor frame numbers between consecutive dataset rows.
+    """
+    complete = {key: values for key, values in timing.items() if len(values) == rows}
+    if not complete:
+        return {'available': False}
+    arrays = {key: np.stack(values) for key, values in complete.items()}
+    directory = stage / 'timestamps'
+    directory.mkdir(parents=True, exist_ok=True)
+    np.savez(directory / f'episode_{episode:06d}.npz', **arrays)
+    summary = {'available': True, 'rows': rows, 'fps': fps}
+    host = arrays.get('time_capture_host')
+    if host is not None and rows > 1:
+        gaps = np.diff(host.astype(float)) * 1000.0
+        summary['row_gap_ms'] = dict(median=float(np.median(gaps)), max=float(gaps.max()),
+                                     over_2x=int((gaps > 2000.0 / fps).sum()))
+    for key, values in arrays.items():
+        if key.endswith('_color_frame_number') and rows > 1:
+            numbers = values.astype(np.int64)
+            if (numbers < 0).any():
+                continue
+            steps = np.diff(numbers)
+            camera = key[len('time_'):-len('_color_frame_number')]
+            summary[camera] = dict(repeated=int((steps == 0).sum()),
+                                   skipped=int(np.clip(steps - 1, 0, None).sum()))
+    (directory / f'episode_{episode:06d}.json').write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding='utf-8')
+    return summary
+
+
 def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
                    repo_id: str | None = None, video_backend: str = 'pyav',
                    validate: bool = True) -> dict:
@@ -211,8 +246,12 @@ def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
         task = meta.get('task', '')
         reader = FrameReader(files, schema.cameras)
         depth_rows = []           # row -> sidecar file holding its depth
+        timing = {}
         for index in range(len(files)):
             raw = reader.read(index)
+            for key, value in raw.items():
+                if key.startswith('time_'):
+                    timing.setdefault(key, []).append(np.asarray(value))
             frame = {
                 'observation.state': np.asarray(raw['observation_state'], dtype=np.float32),
                 'action': np.asarray(raw['action'], dtype=np.float32),
@@ -246,6 +285,7 @@ def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
                     depth_rows.append(source)
         dataset.save_episode(parallel_encoding=False)
         dataset.finalize()
+        timeline = _write_timestamps(stage, episode, timing, len(files), schema.fps)
         (depth_dir / 'episode.json').write_text(json.dumps({
             **meta, 'episode_index': episode, 'frames': len(files),
             # Row i's depth is depth/episode_*/{depth_rows[i]:06d}.npz (shared by the
@@ -254,6 +294,7 @@ def export_lerobot(take, dataset_root, schema: DatasetSchema | None = None,
             'depth_encoding': DEPTH_ENCODING,
             'extrinsic_convention': EXTRINSIC_CONVENTION,
             'camera_frame': CAMERA_FRAME_CONVENTION,
+            'timeline': timeline,
         }, ensure_ascii=False, indent=2), encoding='utf-8')
         contract_dir = stage / 'meta'
         contract_dir.mkdir(parents=True, exist_ok=True)
@@ -331,3 +372,88 @@ def export_episode(take, dataset_root, schema=None, prefer='lerobot') -> dict:
         return export_lerobot(take, dataset_root, schema)
     except ImportError:
         return export_manifest(take, dataset_root, schema)
+
+
+class dataset_lock:
+    """Cross-process lock beside the dataset: exports/edits run one at a time."""
+
+    def __init__(self, dataset_root):
+        root = Path(dataset_root)
+        root.parent.mkdir(parents=True, exist_ok=True)
+        self.path = root.with_name(root.name + '.lock')
+        self.handle = None
+
+    def __enter__(self):
+        self.handle = self.path.open('a+')
+        if os.name == 'nt':
+            import msvcrt
+            self.handle.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(self.handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.5)
+        else:
+            import fcntl
+            fcntl.flock(self.handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if os.name == 'nt':
+                import msvcrt
+                self.handle.seek(0)
+                msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.handle, fcntl.LOCK_UN)
+        finally:
+            self.handle.close()
+        return False
+
+
+def isolated_exporter(name: str = 'lerobot', python: str | None = None):
+    """Export in a low-priority child process, as the original UR5 pipeline did.
+
+    Video encoding then cannot stall or crash the capture process; each take
+    keeps its own ``export.log``.
+    """
+    import subprocess
+    import sys
+    prefer = 'manifest' if str(name).strip().lower() == 'manifest' else 'lerobot'
+    package_parent = Path(__file__).resolve().parents[2]
+
+    def export(take, dataset_root):
+        take = Path(take)
+        env = dict(os.environ, PYTHONUTF8='1', HF_HUB_OFFLINE='1', HF_DATASETS_OFFLINE='1')
+        env['PYTHONPATH'] = os.pathsep.join(filter(None, [str(package_parent),
+                                                          env.get('PYTHONPATH', '')]))
+        options = ({'creationflags': subprocess.BELOW_NORMAL_PRIORITY_CLASS} if os.name == 'nt'
+                   else {'preexec_fn': lambda: os.nice(10)})
+        with (take / 'export.log').open('w', encoding='utf-8') as log:
+            completed = subprocess.run(
+                [python or sys.executable, '-m', f'{__package__}.export', str(take),
+                 str(dataset_root), '--format', prefer],
+                env=env, stdout=log, stderr=subprocess.STDOUT, **options)
+        if completed.returncode:
+            raise DatasetError(f'export failed (exit {completed.returncode}); see {take / "export.log"}')
+        return json.loads((take / 'export.log').read_text(encoding='utf-8').strip().splitlines()[-1])
+
+    return export
+
+
+def main(argv=None):
+    import argparse
+    parser = argparse.ArgumentParser(description='Export one spooled take into a dataset.')
+    parser.add_argument('take')
+    parser.add_argument('dataset_root')
+    parser.add_argument('--format', choices=('lerobot', 'manifest'), default='lerobot')
+    args = parser.parse_args(argv)
+    with dataset_lock(args.dataset_root):
+        summary = export_episode(args.take, args.dataset_root, prefer=args.format)
+    print(json.dumps(summary, ensure_ascii=False), flush=True)
+
+
+if __name__ == '__main__':
+    main()

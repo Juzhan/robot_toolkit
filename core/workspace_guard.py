@@ -59,3 +59,24 @@ class WorkspaceGuard:
         self.check_position(predicted)
         if np.linalg.norm(predicted[:3]-state.tcp[:3]) > model_tolerance_m:
             raise SafetyViolation('FK / measured TCP mismatch exceeds 10 mm')
+
+
+def held_object_slack(fk, start_tcp, start, target, radius_m, step_rad=0.01):
+    """Worst height margin (m) of a rigidly held object along a joint-linear path.
+
+    Every object point within ``radius_m`` of the TCP is covered: relative to the
+    TCP it can drop at most ``radius_m * |R^T z - R0^T z|``. Negative means some
+    point may end below its height at ``start_tcp``.
+    """
+    from .mathutils import pose_to_matrix
+    up = np.array([0.0, 0.0, 1.0])
+    t0 = pose_to_matrix(start_tcp)
+    up0 = t0[:3, :3].T @ up
+    start, target = np.asarray(start, float), np.asarray(target, float)
+    steps = max(1, int(np.ceil(np.max(np.abs(target - start)) / step_rad)))
+    worst = np.inf
+    for s in np.linspace(0.0, 1.0, steps + 1):
+        t = pose_to_matrix(fk(start + (target - start) * s))
+        drop = radius_m * np.linalg.norm(t[:3, :3].T @ up - up0)
+        worst = min(worst, float(t[2, 3] - t0[2, 3] - drop))
+    return worst

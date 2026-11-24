@@ -1,0 +1,3 @@
+Source: https://github.com/box2ai-robotics/joycon-robotics
+Base commit: 3e37ebfdf1db88fe4ecaa7018ae9c8c49efcde0e
+This bundle includes local HID matching and retry fixes used by the simulators.

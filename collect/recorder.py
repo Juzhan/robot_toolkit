@@ -63,11 +63,13 @@ class EpisodeRecorder:
     def __init__(self, root, schema: DatasetSchema, export=None,
                  export_mode: str = 'background', fps: float | None = None,
                  max_frames: int = 6000, queue_max: int = 64,
-                 compress: bool = False, clock=time.monotonic):
+                 compress: bool = False, clock=time.monotonic, dataset_root=None):
         """``max_frames`` caps one episode; ``0`` means no frame cap.
 
         ``compress=False`` (default) stores raw ``.npz`` frames so the spool can
         keep up with a 30 Hz camera; compression is ~20x slower per frame.
+        ``dataset_root`` shares one dataset across sessions (episodes append);
+        by default each session exports into its own ``<session>/dataset``.
         """
         if export_mode not in ('background', 'deferred'):
             raise ValueError("export_mode must be 'background' or 'deferred'")
@@ -82,7 +84,7 @@ class EpisodeRecorder:
         self.clock = clock
         self.session = self.root / (datetime.now().strftime('%Y%m%d_%H%M%S') + '_' +
                                     uuid.uuid4().hex[:6])
-        self.dataset_root = self.session / 'dataset'
+        self.dataset_root = Path(dataset_root) if dataset_root else self.session / 'dataset'
         self.session.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._queue: queue.Queue = queue.Queue()
