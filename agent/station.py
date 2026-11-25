@@ -104,6 +104,7 @@ class Station:
         self.execute = False
         self.blocked = None
         self.gripper_command = None
+        self.last_stillness = None
         self._prepared = False
 
     # ------------------------------------------------------------- building
@@ -265,22 +266,37 @@ class Station:
         return result
 
     def stationary(self) -> bool | None:
-        """True only when fresh feedback shows the joints still; None when that cannot be shown."""
+        """True once fresh feedback shows the joints still within ``settle_timeout_s``.
+
+        False when they kept moving for the whole wait; None when feedback could
+        not show it. ``last_stillness`` keeps the evidence.
+        """
+        started = time.monotonic()
+        spread = None
+        while True:
+            result, spread = self._still_window()
+            waited = time.monotonic() - started
+            if result is not False or waited >= self.options.settle_timeout_s:
+                self.last_stillness = {'still': result, 'waited_s': round(waited, 3),
+                                       'joint_spread_rad': spread}
+                return result
+
+    def _still_window(self):
         samples = []
         steps = 3
         for index in range(steps):
             try:
                 samples.append(self.robot.state())
             except Exception:
-                return None
+                return None, None
             if index < steps - 1:
                 time.sleep(self.options.stationary_window_s / (steps - 1))
         if any(sample.q is None for sample in samples):
-            return None
+            return None, None
         if self.physical and not samples[-1].t > samples[0].t:
-            return None
-        spread = np.ptp(np.stack([np.asarray(sample.q, float) for sample in samples]), axis=0)
-        return bool(np.max(spread) <= self.options.stationary_joint_rad)
+            return None, None
+        spread = float(np.max(np.ptp(np.stack([np.asarray(sample.q, float) for sample in samples]), axis=0)))
+        return spread <= self.options.stationary_joint_rad, spread
 
     # --------------------------------------------------------------- motion
     def clear_block(self) -> None:
@@ -315,6 +331,8 @@ class Station:
             operator = True
         if operator and self.blocked is None and outcome != 'none':
             self.blocked = reason
+        if self.last_stillness is not None:
+            diagnostics['stillness'] = self.last_stillness
         return Receipt(accepted, outcome, stop, operator, reason, state, diagnostics)
 
     def _joint_target(self, T_world_control, state: StationState) -> np.ndarray:

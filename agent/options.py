@@ -32,5 +32,7 @@ class AgentOptions:
     gripper_deadband: float = 0.05
     stationary_window_s: float = 0.2
     stationary_joint_rad: float = 0.002
+    # Arrival may still ring; stillness is awaited this long before it counts as not observed.
+    settle_timeout_s: float = 1.5
     control_frequency_hz: float = 2.0
     max_episode_steps: int = 400
