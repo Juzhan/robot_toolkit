@@ -50,7 +50,7 @@ def test_capture_applies_world_base_and_keeps_uncalibrated_views_unclaimed():
     frames = station.capture()
     np.testing.assert_allclose(frames['scene'].T_world_optical[:3, 3], [1.5, 2.0, 1.0])
     assert frames['scene'].depth_m is not None and frames['scene'].calibration_source == 'eye_to_hand'
-    assert frames['wrist'].K is None and frames['wrist'].T_world_optical is None
+    assert frames['wrist'].T_world_optical is None and frames['wrist'].calibration_source == 'uncalibrated'
     station.close()
 
 

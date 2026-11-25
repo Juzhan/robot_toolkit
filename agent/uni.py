@@ -161,8 +161,10 @@ class UniBackend:
         except Exception as error:
             raise RequestRejected(f'Observation failed ({type(error).__name__}: {error}); '
                                   'no physical action was executed') from error
-        payload = {name: CameraFrame(rgb=frame.rgb, depth_m=frame.depth_m, intrinsic_K=frame.K,
-                                     T_world_from_optical=frame.T_world_optical,
+        # UNI accepts calibration only as a complete pair.
+        payload = {name: CameraFrame(rgb=frame.rgb, depth_m=frame.depth_m,
+                                     intrinsic_K=frame.K if frame.T_world_optical is not None else None,
+                                     T_world_from_optical=frame.T_world_optical if frame.K is not None else None,
                                      calibration={'source': frame.calibration_source, 'frame_time': frame.t})
                    for name, frame in frames.items()}
         return CapturedObservation(self.episode_id, self.steps, time.time(), state.model_dump(mode='json'),

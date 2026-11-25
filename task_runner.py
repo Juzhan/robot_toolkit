@@ -46,7 +46,7 @@ ROOT = (Path(__file__).resolve().parents[2]
         else _PACKAGE_ROOT)
 DEFAULT_ROOT = 'outputs/robot_tasks'
 MODES = ('teach', 'replay', 'collect', 'teach_collect', 'export', 'session',
-         'master_slave', 'calibrate', 'safety')
+         'master_slave', 'calibrate', 'safety', 'agent')
 
 
 @dataclass
@@ -1517,6 +1517,11 @@ def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             print_plan(task, mode, None, dataset_override)
             return 0
         return run_safety(task, mock=mock)
+    if mode == 'agent':
+        print('agent 模式由外部智能体框架驱动，例如 UNI：\n'
+              f'  python -m robot_toolkit.agent.uni {task.slug} --run-id <id> --instruction <任务> '
+              '--output-dir <目录> [--execute]')
+        return 2
     root = trajectory_root(task)
     if mode in ('teach', 'teach_collect'):
         resolved = name or task.name or _next_name(task, root)

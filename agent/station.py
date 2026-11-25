@@ -80,6 +80,15 @@ def _depth_m(depth):
     return depth.astype(np.float32) * np.float32(0.001) if depth.dtype == np.uint16 else depth.astype(np.float32)
 
 
+def _resolve(path) -> str:
+    """Relative config paths name files under the current or the workspace directory."""
+    from pathlib import Path
+    candidate = Path(path)
+    if candidate.is_absolute() or candidate.exists():
+        return str(candidate)
+    return str(Path(__file__).resolve().parents[2] / candidate)
+
+
 class Station:
     def __init__(self, platform: RobotPlatform, options: AgentOptions | None = None, *,
                  calibrations: dict | None = None, physical: bool = True):
@@ -120,7 +129,7 @@ class Station:
         cameras = build_camera_hub(entries) if entries else None
         calibrations = {}
         for path in options.calibration_paths:
-            calibrations.update(CalibrationStore(path).cameras)
+            calibrations.update(CalibrationStore(_resolve(path)).cameras)
         return cls(RobotPlatform(robot, gripper=gripper, cameras=cameras), options,
                    calibrations=calibrations, physical=not mock)
 
@@ -248,8 +257,8 @@ class Station:
             if base_optical is None and frame.T_world_camera is not None:
                 base_optical, source = frame.T_world_camera, 'camera_driver'
             T = None if base_optical is None else self.T_world_base @ np.asarray(base_optical, float)
-            if K is None or T is None:
-                K, T, source = None, None, 'uncalibrated'
+            if T is None:
+                source = 'uncalibrated'
             result[name] = StationFrame(rgb=np.asarray(frame.rgb, np.uint8), depth_m=_depth_m(frame.depth),
                                         K=None if K is None else np.asarray(K, float), T_world_optical=T,
                                         t=float(frame.t), calibration_source=source)
@@ -367,6 +376,24 @@ class Station:
         reached = self.gripper.move(width, wait=True, timeout=self.options.gripper_timeout_s)
         return {'status': 'commanded', 'opening': opening, 'target_width_m': width,
                 'target_reached': bool(reached), 'width_m': float(self.gripper.state().width)}
+
+    def preview_pose(self, T_world_control) -> dict:
+        """Every pre-dispatch check of ``move_pose`` without sending anything.
+
+        Raises ``Rejected`` (or the guard's ``SafetyViolation``) exactly where a
+        real command would be refused; works on a read-only connection.
+        """
+        state = self.read()
+        joints = self._joint_target(_matrix(T_world_control, 'target'), state)
+        jump = float(np.max(np.abs(joints - state.q)))
+        if jump > self.options.max_joint_jump_rad:
+            raise Rejected(f'joint target jumps {jump:.3f} rad (limit {self.options.max_joint_jump_rad})')
+        guard = getattr(self.robot, 'guard', None)
+        if guard is not None and guard.limits.violates(joints):
+            raise Rejected('target violates hardware joint limits')
+        if hasattr(self.robot, 'check_workspace_path'):
+            self.robot.check_workspace_path(state.q, joints)
+        return {'joints': joints, 'joint_jump_rad': jump}
 
     def move_pose(self, T_world_control, gripper: float | None = None) -> Receipt:
         refusal = self._admit()
