@@ -63,6 +63,7 @@ def test_uni_tools_drive_a_toolkit_station(served):
         np.testing.assert_allclose(station.read().T_world_control[:3, 3], before + [0.06, 0, 0], atol=0.03)
         grasped = session.tools.call('grasp', {'targets': [{'arm': 'arm'}]}).to_dict()
         assert grasped['success'], grasped
+        assert grasped['feedback']['arms']['arm']['opening_status'] == 'reached', grasped['feedback']
         assert station.gripper.state().target == pytest.approx(station.gripper.min_width)
         finished = session.tools.call('finish', {'status': 'success', 'summary': 'test done'}).to_dict()
         assert finished['success'], finished

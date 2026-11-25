@@ -71,6 +71,9 @@ class UniBackend:
             'approach': {'max_step_m': min(0.04, step), 'position_tolerance_m': 0.02, 'orientation_tolerance_rad': 0.05},
             'precision': {'max_step_m': min(0.01, step), 'position_tolerance_m': 0.005,
                           'orientation_tolerance_rad': 0.05}}
+        if info['gripper'] is not None:
+            # Lets UNI judge measured openings (gripper_opening_measured) instead of reporting them unavailable.
+            metadata['normalized_opening_tolerance'] = 0.1
         self.description = c.EnvironmentDescription(
             arms=[c.ArmDescription(
                 name=self.arm, control_frame=f'{self.arm}_control_point',
