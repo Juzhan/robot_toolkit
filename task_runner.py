@@ -29,6 +29,7 @@ from .collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_traje
                       exporter_for)
 from .collect.passive import sample_episodes
 from .calibrate.options import CalibrateOptions
+from .agent.options import AgentOptions
 from .config import build_dataclass
 from .errors import DatasetError
 from .profiles import build_camera_hub, build_gripper, build_robot
@@ -167,6 +168,7 @@ class TaskConfig:
     master_slave: MasterSlaveOptions = field(default_factory=MasterSlaveOptions)
     calibrate: CalibrateOptions = field(default_factory=CalibrateOptions)
     safety: SafetyOptions = field(default_factory=SafetyOptions)
+    agent: AgentOptions = field(default_factory=AgentOptions)
     source_path: str = ''
 
 

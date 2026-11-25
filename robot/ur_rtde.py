@@ -63,6 +63,10 @@ class UrRtdeRobot(RobotBackend):
         self._t0 = time.monotonic()
 
     # ------------------------------------------------------------------ link
+    def connect_read_only(self):
+        """RTDE receive only: no control script, so the pendant keeps Freedrive and motion is impossible."""
+        return self.connect(with_control=False)
+
     def connect(self, with_control: bool = True):
         if self.mock:
             self._connected = True
