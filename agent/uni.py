@@ -64,6 +64,13 @@ class UniBackend:
             'gripper': info['gripper'],
             'control_frequency_semantics': 'maximum_submission_rate_not_realtime_guarantee',
         }
+        # UNI's shared steps must fit the station's per-command limit, or every step is refused.
+        step = max(station.options.max_step_m - 0.002, 0.005)
+        metadata['motion_profiles'] = {
+            'standard': {'max_step_m': min(0.04, step), 'position_tolerance_m': 0.03, 'orientation_tolerance_rad': 0.1},
+            'approach': {'max_step_m': min(0.04, step), 'position_tolerance_m': 0.02, 'orientation_tolerance_rad': 0.05},
+            'precision': {'max_step_m': min(0.01, step), 'position_tolerance_m': 0.005,
+                          'orientation_tolerance_rad': 0.05}}
         self.description = c.EnvironmentDescription(
             arms=[c.ArmDescription(
                 name=self.arm, control_frame=f'{self.arm}_control_point',
@@ -269,4 +276,8 @@ def main(argv=None) -> int:
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        # Ctrl-C is the normal stop; the lifespan hook has already finished the episode.
+        raise SystemExit(130)

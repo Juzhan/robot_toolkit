@@ -161,6 +161,26 @@ class RealSenseCamera(ThreadedCamera):
                 pass
             self._pipeline = None
 
+    def hardware_reset(self, wait_s: float = 15.0) -> bool:
+        """Power-cycle this device over USB and wait until it enumerates again."""
+        rs = _import_realsense()
+        if not self.serial:
+            return False
+        devices = [d for d in rs.context().query_devices()
+                   if d.get_info(rs.camera_info.serial_number) == self.serial]
+        if not devices:
+            return False
+        devices[0].hardware_reset()
+        time.sleep(3.0)
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            if any(d.get_info(rs.camera_info.serial_number) == self.serial
+                   for d in rs.context().query_devices()):
+                time.sleep(1.0)
+                return True
+            time.sleep(0.5)
+        return False
+
 
 def capture_time(hw_time_ms, time_domain, now_perf=None, now_wall=None):
     """Frame capture time on the host ``perf_counter`` clock, or ``None``.

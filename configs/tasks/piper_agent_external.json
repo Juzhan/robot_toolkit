@@ -1,0 +1,113 @@
+{
+  "slug": "piper_agent_external",
+  "task": "piper station, external camera only (wrist camera unstable)",
+  "mode": "agent",
+  "root": "outputs/robot_tasks",
+  "robot": {
+    "kind": "agx_piper",
+    "name": "piper_x",
+    "options": {
+      "model": "piper_x",
+      "interface": "auto",
+      "channel": "auto",
+      "firmware": "default",
+      "enable_on_connect": false,
+      "configure_on_connect": true,
+      "speed_percent": 20,
+      "has_gripper": true
+    },
+    "limits": {
+      "max_velocity": 0.5,
+      "max_step_rad": 0.5,
+      "workspace": {
+        "lower_m": [
+          0.05,
+          -0.3,
+          0.2
+        ],
+        "upper_m": [
+          0.55,
+          0.3,
+          0.6
+        ],
+        "margin_m": 0.03,
+        "step_rad": 0.01,
+        "lower_enabled": [
+          true,
+          true,
+          true
+        ],
+        "upper_enabled": [
+          true,
+          true,
+          true
+        ]
+      }
+    },
+    "safety": true
+  },
+  "gripper": {
+    "kind": "agx"
+  },
+  "collect": {
+    "cameras": [
+      {
+        "kind": "realsense",
+        "name": "external_camera",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "depth": true,
+        "serial": "262522071417"
+      }
+    ]
+  },
+  "agent": {
+    "arm_name": "arm",
+    "robot_id": "piper-x-lab",
+    "control_site": "between the finger pads, 0.12 m out of the link6 flange (URDF fingertips at 0.1358 m); +z points out of the fingertips, fingers close along x",
+    "T_tcp_control": [
+      [
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        1,
+        0.12
+      ],
+      [
+        0,
+        0,
+        0,
+        1
+      ]
+    ],
+    "rotation_radius_m": 0.15,
+    "calibration_paths": [
+      "robot_toolkit/configs/calibration/piper_x_wrist_d435.json"
+    ],
+    "max_step_m": 0.03,
+    "max_step_rad": 0.2,
+    "max_joint_jump_rad": 0.4,
+    "position_tolerance_m": 0.01,
+    "rotation_tolerance_rad": 0.05,
+    "move_timeout_s": 20.0,
+    "move_options": {
+      "use_native": false,
+      "speed": 0.3,
+      "accel": 0.6
+    },
+    "control_frequency_hz": 1.0,
+    "max_episode_steps": 200
+  }
+}

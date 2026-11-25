@@ -148,11 +148,28 @@ class Station:
                     raise
                 self.robot.connect()
         if self.cameras is not None and len(self.cameras):
-            self.cameras.open()
-            if not self.cameras.warmup(min_frames=2, timeout=8.0):
-                raise RobotUnavailable('cameras did not deliver frames within 8 s')
+            self._open_cameras()
         self.execute = bool(execute)
         return self
+
+    def _open_cameras(self) -> None:
+        """Open and warm up; a camera that delivers nothing gets one hardware reset and a retry.
+
+        Seen on a D435: the stream stalls with depth enabled until the device is reset.
+        """
+        for attempt in range(2):
+            self.cameras.open()
+            if self.cameras.warmup(min_frames=2, timeout=8.0):
+                return
+            stalled = [camera for camera in self.cameras if camera.frames_seen == 0]
+            self.cameras.close()
+            resettable = [camera for camera in stalled if hasattr(camera, 'hardware_reset')]
+            if attempt or not resettable:
+                break
+            for camera in resettable:
+                camera.hardware_reset()
+        raise RobotUnavailable('cameras did not deliver frames within 8 s'
+                               + (' (after a hardware reset)' if attempt else ''))
 
     def close(self) -> None:
         errors = []
