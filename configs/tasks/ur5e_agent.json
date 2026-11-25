@@ -1,0 +1,68 @@
+{
+  "slug": "ur5e_agent",
+  "task": "ur5e single-arm station for agent frameworks (UNI dry-run ready)",
+  "mode": "agent",
+  "root": "outputs/robot_tasks",
+  "robot": {
+    "kind": "ur_rtde",
+    "name": "ur5",
+    "options": {
+      "ip": "192.168.1.50",
+      "frequency": 125.0,
+      "payload_kg": 0.0,
+      "payload_cog": [0.0, 0.0, 0.06],
+      "tcp_offset": [0.0, 0.0, 0.1488, 0.0, 0.0, 0.0],
+      "home_joints": [0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0],
+      "freedrive_axes": [1, 1, 1, 1, 1, 1],
+      "max_joint_speed": 2.0,
+      "servo_lookahead": 0.1,
+      "servo_gain": 300,
+      "approach_speed": 0.4,
+      "approach_accel": 0.8
+    },
+    "limits": {
+      "max_velocity": 0.5,
+      "max_step_rad": 0.2
+    },
+    "safety": true
+  },
+  "gripper": {
+    "kind": "robotiq",
+    "options": {
+      "backend": "urcap_socket",
+      "max_width_m": 0.085,
+      "force": 100,
+      "speed": 150,
+      "urcap_port": 63352,
+      "poll_hz": 5.0,
+      "close_settle_s": 0.4,
+      "open_settle_s": 0.2,
+      "require_fresh_measurement": true
+    }
+  },
+  "collect": {
+    "cameras": [
+      {"kind": "realsense", "name": "wrist_camera", "width": 640, "height": 480,
+       "fps": 30, "depth": true, "serial": "846112070112"},
+      {"kind": "realsense", "name": "external_camera", "width": 640, "height": 480,
+       "fps": 30, "depth": true, "serial": "342522071753"}
+    ]
+  },
+  "agent": {
+    "arm_name": "arm",
+    "robot_id": "ur5e-lab",
+    "control_site": "robotiq 2F-85 pinch centre, 0.1488 m out of the UR flange (the UR tcp_offset); +z points out of the fingertips",
+    "T_tcp_control": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+    "rotation_radius_m": 0.15,
+    "calibration_paths": ["robot_toolkit/configs/calibration/ur5e_collect_cameras.json"],
+    "max_step_m": 0.03,
+    "max_step_rad": 0.2,
+    "max_joint_jump_rad": 0.4,
+    "position_tolerance_m": 0.01,
+    "rotation_tolerance_rad": 0.05,
+    "move_timeout_s": 20.0,
+    "move_options": {"speed": 0.4, "accel": 0.8},
+    "control_frequency_hz": 1.0,
+    "max_episode_steps": 200
+  }
+}
