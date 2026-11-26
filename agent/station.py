@@ -120,7 +120,13 @@ class Station:
         gripper = None
         kind = str((task.gripper or {}).get('kind', '')).lower()
         if kind not in ('', 'none', 'disabled'):
-            gripper = build_gripper(kind, robot=robot, options=dict(task.gripper.get('options') or {}))
+            if mock:
+                # A mock station must not open CAN, serial or Robotiq sockets,
+                # and the real backend options do not apply to MockGripper.
+                gripper = build_gripper('mock', robot=robot, options={})
+            else:
+                gripper = build_gripper(
+                    kind, robot=robot, options=dict(task.gripper.get('options') or {}))
         entries = list(task.collect.cameras)
         if mock:
             entries = [{'kind': 'mock', 'name': entry.get('name', 'camera'),

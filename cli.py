@@ -472,6 +472,44 @@ def cmd_calib_show(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------- nudge
+def cmd_nudge(args) -> int:
+    """Move the station control point by centimetres along the world axes."""
+    from .agent.station import Station
+
+    if not args.mock and not args.yes:
+        print('这会向真机发送位移指令；确认工作区无人、急停在手后加 --yes 执行。',
+              file=sys.stderr)
+        return 2
+    delta = np.array([args.x, args.y, args.z], dtype=float) / 100.0
+    station = Station.from_task(args.task, mock=args.mock).open(execute=True)
+    try:
+        state = station.read()
+        start = np.asarray(state.T_world_control, dtype=float).copy()
+        limit = station.options.max_step_m * 0.95
+        steps = max(1, int(np.ceil(float(np.linalg.norm(delta)) / limit)))
+        print(f'start xyz_m {np.round(start[:3, 3], 4).tolist()}')
+        print(f'delta_m {np.round(delta, 4).tolist()} steps {steps} '
+              f'(max {limit:.4f} m per step)')
+        if args.mock:
+            # A mock backend has no kinematics, so report the plan instead of
+            # pretending the arm reached a pose it could not solve.
+            print('mock: nothing sent to hardware')
+            return 0
+        for index in range(1, steps + 1):
+            target = start.copy()
+            target[:3, 3] = start[:3, 3] + delta * index / steps
+            receipt = station.move_pose(target, gripper=state.gripper)
+            print(f'step {index}/{steps} accepted={receipt.accepted} '
+                  f'outcome={receipt.outcome}')
+            station.read()
+        print(f'end xyz_m '
+              f'{np.round(np.asarray(station.read().T_world_control)[:3, 3], 4).tolist()}')
+        return 0
+    finally:
+        station.close()
+
+
 # ----------------------------------------------------------------------- main
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog='robot_toolkit',
@@ -540,6 +578,16 @@ def build_parser() -> argparse.ArgumentParser:
     show = subparsers.add_parser('calib-show', help='summarize a calibration store')
     show.add_argument('path')
     show.set_defaults(func=cmd_calib_show)
+
+    nudge = subparsers.add_parser(
+        'nudge', help='move a station control point by centimetres (world axes)')
+    nudge.add_argument('task', help='task config name or path')
+    nudge.add_argument('x', nargs='?', type=float, default=0.0)
+    nudge.add_argument('y', nargs='?', type=float, default=0.0)
+    nudge.add_argument('z', nargs='?', type=float, default=3.0)
+    nudge.add_argument('--mock', action='store_true', help='no hardware; report the plan')
+    nudge.add_argument('--yes', action='store_true', help='confirm real robot motion')
+    nudge.set_defaults(func=cmd_nudge)
     return parser
 
 

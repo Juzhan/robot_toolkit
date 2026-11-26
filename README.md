@@ -649,10 +649,10 @@ $PY -m pip install -e "/path/to/robot_toolkit[piper]"     # Piper：pyAgxArm + p
 $PY -m pip install ur_rtde                                # UR5e：rtde_control / rtde_receive
 ```
 
-不需要 activate。`scripts/realrun.sh` 固定解释器和 `PYTHONPATH`，`PY=` 可覆盖：
+不需要 activate。`run.py` 会按 5.3 节的顺序选解释器，`cli doctor` 会列出缺什么：
 
 ```bash
-./scripts/realrun.sh env     # 列出解释器与各 SDK 是否就绪
+python -m robot_toolkit.cli doctor    # 解释器、平台、各 SDK 是否就绪
 ```
 
 | 缺什么 | 影响 | 处理 |
@@ -660,23 +660,29 @@ $PY -m pip install ur_rtde                                # UR5e：rtde_control 
 | `pyrealsense2` | 相机打不开 | `pip install pyrealsense2` |
 | `pyAgxArm` | Piper 连不上 CAN | 装 `[piper]` extra |
 | `rtde_control` | UR5e 连接直接报错 | `pip install ur_rtde` |
-| `uni_robot_agent` / `fastapi` | `execute` 起不来服务 | 仓库路径加进 `PYTHONPATH`（脚本已处理） |
 
-**UR5e 案例**（mock，不动硬件，先确认配置与链路）：
+**UR5e 案例**（先 `--mock` 只看计划，不碰硬件）：
 
 ```bash
-MOCK=1 ./scripts/realrun.sh nudge ur5e_agent 0 0 3
-# start xyz_m [0.3, 0.0, 0.3] / delta_m [0.0, 0.0, 0.03] / steps 2
-# step 1/2 accepted=True outcome=completed
-# step 2/2 accepted=True outcome=completed
-# end xyz_m [0.3, 0.0, 0.33]
+python -m robot_toolkit.cli nudge ur5e_agent 0 0 3 --mock
+# start xyz_m [0.0, 0.0, 0.0]
+# delta_m [0.0, 0.0, 0.03] steps 2 (max 0.0285 m per step)
+# mock: nothing sent to hardware
 ```
 
 真机（**会让机械臂动**，先在现场确认急停可用）：
 
 ```bash
-./scripts/realrun.sh observe ur5e_agent        # 只读：连上、拍照、读状态，不发送动作
-./scripts/realrun.sh nudge ur5e_agent 0 0 3    # 控制点沿世界 +Z 移动 3 cm
+python -m robot_toolkit.cli nudge ur5e_agent 0 0 3 --yes
+# step 1/2 accepted=True outcome=completed
+# end xyz_m [...]
+```
+
+只读观察用 agent 服务（`--execute` 才能动，默认只观察）：
+
+```bash
+python -m robot_toolkit.agent.uni ur5e_agent \
+  --run-id ur5e-observe-1 --instruction "observe scene" --output-dir /tmp/ur5e-observe
 ```
 
 上真机前必须确认 `configs/tasks/ur5e_agent.json`：
