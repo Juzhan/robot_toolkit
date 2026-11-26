@@ -19,7 +19,7 @@ from __future__ import annotations
 import time
 import numpy as np
 
-from .core.collision import DistanceGrid
+from ..core.collision import DistanceGrid
 
 
 def depth_to_points(depth, K, stride=1, depth_min=0.05, depth_max=1.5):
@@ -117,7 +117,7 @@ class DepthObstacleMap:
         self.grid = None
         self.backend = backend
         if backend == 'robokit':
-            from .adapters.robokit_sdf import RobokitSdfMap
+            from ..adapters.robokit_sdf import RobokitSdfMap
             self._sdf = RobokitSdfMap(self.bounds_min, self.bounds_max, self.voxel,
                                       depth_max=depth_max)
         elif backend != 'numpy':

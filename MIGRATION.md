@@ -7,7 +7,7 @@
 
 | 现有文件 | 新位置 | 说明 |
 | --- | --- | --- |
-| `ur5e_real_collect/config.py` | `config.py`, `profiles.py` | 通用 JSON + dataclass 配置；机器人/夹爪/相机用 profile 构建 |
+| `ur5e_real_collect/config.py` | `config.py`, `runtime/profiles.py` | 通用 JSON + dataclass 配置；机器人/夹爪/相机用 profile 构建 |
 | `ur5e_real_collect/robot.py` | `robot/ur_rtde.py` | 同一套 RTDE 逻辑，多一个统一接口；`mock=True` 可直接离线跑 |
 | `ur5e_real_collect/robot.py`（旧代码直接复用） | `adapters/legacy_ur.py` | 不改旧驱动，包一层即可接入新流程 |
 | `ur5e_real_collect/gripper.py` | `gripper/robotiq.py` | 宽度统一为米；mock / URScript / URCap / Modbus 后端保留 |

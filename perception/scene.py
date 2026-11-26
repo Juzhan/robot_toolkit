@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 import numpy as np
 
 if TYPE_CHECKING:
-    from .robot_platform import Observation
+    from ..runtime.robot_platform import Observation
 
 
 @dataclass(frozen=True)

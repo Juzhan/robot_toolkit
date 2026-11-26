@@ -6,7 +6,7 @@ import pytest
 from robot_toolkit.control.guarded import CollisionBrake
 from robot_toolkit.core.collision import CollisionGuard, DistanceGrid, d435_spheres
 from robot_toolkit.errors import SafetyViolation
-from robot_toolkit.obstacle_map import DepthObstacleMap, depth_to_points, robot_pixel_mask
+from robot_toolkit.perception.obstacle_map import DepthObstacleMap, depth_to_points, robot_pixel_mask
 
 pytest.importorskip('scipy')
 START = np.array([0.179, 1.159, -1.051, 1.071, -0.011, 0.074])   # camera looks down

@@ -19,7 +19,7 @@ from ..collect.passive import sample_episodes
 from ..config import build_dataclass
 from ..core.safety_envelope import SafetyEnvelope
 from ..errors import DatasetError
-from ..profiles import build_camera_hub, build_gripper, build_robot
+from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
 from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
                      load_trajectory, save_trajectory, state_line, summarize)
 from ..teleop import ButtonHub

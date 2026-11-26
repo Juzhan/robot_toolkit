@@ -8,7 +8,7 @@ from robot_toolkit.camera import CameraHub, MockCamera
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.gripper import MockGripper
 from robot_toolkit.robot import MockRobot
-from robot_toolkit.robot_platform import RobotPlatform
+from robot_toolkit.runtime.robot_platform import RobotPlatform
 
 HOME = [0.3, 0.0, 0.3, 0.0, 0.0, 0.0]
 

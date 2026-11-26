@@ -4,8 +4,8 @@ import json
 
 import numpy as np
 
-from robot_toolkit.external_tools import Segmentation, SegmentationResult
-from robot_toolkit.perception import PerceptionFrame, inspect_object
+from robot_toolkit.perception.external_tools import Segmentation, SegmentationResult
+from robot_toolkit.perception.perception import PerceptionFrame, inspect_object
 
 
 class SyntheticSegmenter:

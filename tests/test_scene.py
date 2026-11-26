@@ -7,8 +7,8 @@ from robot_toolkit import RobotPlatform
 from robot_toolkit.camera import CameraHub, MockCamera
 from robot_toolkit.camera.base import CameraFrame
 from robot_toolkit.robot import MockRobot
-from robot_toolkit.robot_platform import Observation
-from robot_toolkit.scene import (ObjectSpec, PlacementCondition, PlanarColorEstimator,
+from robot_toolkit.runtime.robot_platform import Observation
+from robot_toolkit.perception.scene import (ObjectSpec, PlacementCondition, PlanarColorEstimator,
                                  ResetLayoutVerifier, SceneSpec)
 
 

@@ -18,7 +18,7 @@ import numpy as np
 
 from ..core.mathutils import invert_transform, matrix_to_pose, pose_error, pose_to_matrix
 from ..errors import NotSupported, RobotUnavailable
-from ..robot_platform import RobotPlatform
+from ..runtime.robot_platform import RobotPlatform
 from .options import AgentOptions
 
 # Platform reasons that mean nothing was sent to the arm.
@@ -112,7 +112,7 @@ class Station:
     def from_task(cls, task, *, mock: bool = False, options: AgentOptions | None = None) -> 'Station':
         """Build devices from a task config name/path (or a loaded TaskConfig)."""
         from ..calibrate.store import CalibrationStore
-        from ..profiles import build_camera_hub, build_gripper, build_robot
+        from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
         from ..task_runner import load_task_config
         task = load_task_config(task) if isinstance(task, str) else task
         options = options or task.agent

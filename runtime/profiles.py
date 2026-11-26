@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .camera import Camera, CameraHub, MockCamera, OpenCVCamera, RealSenseCamera
-from .core.conventions import GripperSpec, RobotSpec
-from .core.safety import JointLimits, SafetyGuard, WorkspaceBox
-from .errors import ConfigurationError
-from .gripper import AgxGripper, GripperBackend, MockGripper, RobotiqConfig, RobotiqGripper
-from .robot import (AgxPiperConfig, AgxPiperRobot, MockRobot, SafeRobot,
+from ..camera import Camera, CameraHub, MockCamera, OpenCVCamera, RealSenseCamera
+from ..core.conventions import GripperSpec, RobotSpec
+from ..core.safety import JointLimits, SafetyGuard, WorkspaceBox
+from ..errors import ConfigurationError
+from ..gripper import AgxGripper, GripperBackend, MockGripper, RobotiqConfig, RobotiqGripper
+from ..robot import (AgxPiperConfig, AgxPiperRobot, MockRobot, SafeRobot,
                     UrRtdeConfig, UrRtdeRobot)
-from .robot.base import RobotBackend
+from ..robot.base import RobotBackend
 
 
 @dataclass
@@ -67,7 +67,7 @@ def build_robot(profile: RobotProfile | dict | str = 'mock', mock: bool | None =
         robot = AgxPiperRobot(config, spec=profile.spec or RobotSpec.piper_x(), mock=mock)
         default_lower, default_upper = config.limits_lower, config.limits_upper
     elif profile.kind == 'mujoco':
-        from .robot.mujoco import MujocoRobot
+        from ..robot.mujoco import MujocoRobot
         robot = MujocoRobot(spec=profile.spec, **profile.options)
     else:
         raise ConfigurationError(f'unknown robot kind {profile.kind!r}')
@@ -84,8 +84,8 @@ def build_robot(profile: RobotProfile | dict | str = 'mock', mock: bool | None =
         workspace = None
         settings = profile.limits.get('workspace')
         if settings:
-            from .core.workspace_guard import WorkspaceGuard
-            from .core.safety_envelope import SafetyEnvelope
+            from ..core.workspace_guard import WorkspaceGuard
+            from ..core.safety_envelope import SafetyEnvelope
             if settings.get('envelope_path'):
                 envelope = SafetyEnvelope.load(settings['envelope_path'])
                 lower, upper = envelope.tcp_lower[:3], envelope.tcp_upper[:3]
@@ -99,7 +99,7 @@ def build_robot(profile: RobotProfile | dict | str = 'mock', mock: bool | None =
         collision = None
         obstacles = profile.limits.get('obstacles')
         if obstacles:
-            from .core.collision import CollisionGuard
+            from ..core.collision import CollisionGuard
             collision = CollisionGuard.from_config(obstacles)
         robot = SafeRobot(robot, guard, workspace=workspace, collision=collision,
                           raise_on_limit=bool(profile.limits.get('raise_on_limit', True)))

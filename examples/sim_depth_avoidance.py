@@ -25,7 +25,7 @@ from robot_toolkit.core.collision import Box, CollisionGuard, Plane, d435_sphere
 from robot_toolkit.control.guarded import CollisionBrake
 from robot_toolkit.core.continuous import ContinuousReference
 from robot_toolkit.errors import SafetyViolation
-from robot_toolkit.obstacle_map import DepthObstacleMap
+from robot_toolkit.perception.obstacle_map import DepthObstacleMap
 
 ROOT = Path(__file__).resolve().parents[1]
 URDF = ROOT / 'assets' / 'piperx_assets' / 'assets' / 'piper_x.urdf'

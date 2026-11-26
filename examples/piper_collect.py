@@ -33,7 +33,7 @@ from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector,
                        collect_trajectory, exporter_for)
 from ..collect.passive import sample_episodes
 from ..core.conventions import RobotSpec
-from ..profiles import build_camera_hub
+from ..runtime.profiles import build_camera_hub
 from ..robot import AgxPiperConfig, AgxPiperRobot
 from ..teach import load_trajectory
 from ..teleop import TeleopSessionConfig, build_teleop_session

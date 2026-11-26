@@ -187,7 +187,7 @@ def test_reports_require_platform_and_raw_calls_are_not_recorded():
 
 @pytest.fixture
 def monitored_motion(monkeypatch):
-    import robot_toolkit.robot_platform as platform_module
+    import robot_toolkit.runtime.robot_platform as platform_module
 
     class Clock:
         now = 0.0

@@ -56,9 +56,26 @@ robot_toolkit/
 ├── __init__.py               # 公共导出 + 版本
 ├── run.bat / run.py          # 最直接入口：选解释器 -> task_runner（配置文件启动）
 ├── cli.py                    # 统一命令行：selftest / demo / calib-* / piper-* / doctor
-├── task_runner.py            # 按任务 JSON（含 robot/gripper profile）启动示教/回放/采集/主从采样
+├── task_runner.py            # 兼容入口，实现在 tasks/
+├── tasks/                    # 每个模式一个模块
+│   ├── config.py             # 任务 JSON 发现、加载、校验
+│   ├── options.py            # 各模式的选项 dataclass
+│   ├── build.py              # 机器人/夹爪/相机的共用构造
+│   ├── teach.py replay.py export.py collect.py
+│   ├── master_slave.py hand_demo.py calibrate.py session.py safety.py
+│   └── cli.py                # 计划、分派与参数解析
 ├── config.py                 # JSON + dataclass 递归配置
-├── profiles.py               # 由配置构建 mock / ur_rtde / agx_piper / mujoco 后端
+├── runtime/
+│   ├── profiles.py           # 由配置构建 mock / ur_rtde / agx_piper / mujoco 后端
+│   ├── robot_platform.py     # RobotPlatform：统一状态/动作/证据
+│   ├── link_check.py         # 只读连接自检（机器人/从臂/夹爪/相机/CAN）
+│   └── reports.py            # 面向 agent 的操作汇报视图
+├── perception/
+│   ├── perception.py         # 感知帧与外部工具编排
+│   ├── scene.py              # 场景估计与布局校验
+│   ├── obstacle_map.py       # 点云 -> 占据栅格
+│   ├── reconstruction.py     # 多视角重建
+│   └── external_tools.py     # 外部视觉工具配置（SAM3 等）
 ├── control/
 │   ├── chunks.py             # 绝对动作块 + 本地 SequenceSource
 │   └── continuous.py         # 连续参考、共享动作时钟、跟踪/夹爪门控
@@ -597,8 +614,8 @@ python -m robot_toolkit.cli demo --out outputs\robot_toolkit_demo
 python -m pytest tests -q
 ```
 
-真机任务由 `task_runner.py` 读取的任务 JSON 驱动，`robot` / `gripper` /
-`camera` 都由 profile 决定（见 `profiles.py`），业务启动器放在应用层。
+真机任务由 `tasks/` 读取的任务 JSON 驱动，`robot` / `gripper` /
+`camera` 都由 profile 决定（见 `runtime/profiles.py`），业务启动器放在应用层。
 `run.bat` / `run.py` 只是把包路径和解释器选好，然后转给 `task_runner`。
 
 `demo` 会生成：

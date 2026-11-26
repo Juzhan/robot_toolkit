@@ -11,7 +11,7 @@
 | 自动执行 | `calibrate/auto.py`（`plan_capture.py` 为兼容入口） | 位姿来源（随机扫描 / 固定清单）→ 统一安全筛选 → 预检、使能、夹紧、逐站运动、防滑、采集；眼在手上/手外共用 |
 | 配置 | `calibrate/options.py` | `CalibrateOptions`，对应任务 JSON 的 `calibrate` 段 |
 | 设备适配 | `robot/*`、`camera/*` | SDK、协议、单位与坐标约定转换 |
-| 任务配置 | `profiles.py`、`task_runner.py`、`configs/tasks/*` | 选择设备与参数；安全设置和标定是独立任务 |
+| 任务配置 | `runtime/profiles.py`、`tasks/`、`configs/tasks/*` | 选择设备与参数；安全设置和标定是独立任务 |
 
 数据约定：关节为 rad，TCP 为基坐标系下 `[x,y,z,rx,ry,rz]`，
 平移 m、旋转向量 rad；图像点为 px，深度观测为 mm。

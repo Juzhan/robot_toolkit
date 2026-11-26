@@ -28,7 +28,7 @@ import numpy as np
 from robot_toolkit.control.joint_planner import PlanningFailed, RRTConnectPlanner
 from robot_toolkit.core.collision import Box, CollisionGuard, Plane, d435_spheres
 from robot_toolkit.examples.sim_depth_avoidance import ROOT, START, SimCamera, position_ik
-from robot_toolkit.obstacle_map import DepthObstacleMap, KdPoints
+from robot_toolkit.perception.obstacle_map import DepthObstacleMap, KdPoints
 
 LOWER = [-2.618, 0., -2.967, -1.571, -1.571, -2.094]
 UPPER = [2.618, 3.1416, 0., 1.571, 1.571, 2.094]

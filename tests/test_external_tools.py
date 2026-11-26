@@ -10,7 +10,7 @@ from threading import Thread
 import numpy as np
 import pytest
 
-from robot_toolkit.external_tools import ExternalToolError, ExternalTools, Sam3Client, ToolRuntime, main
+from robot_toolkit.perception.external_tools import ExternalToolError, ExternalTools, Sam3Client, ToolRuntime, main
 
 
 def test_catalog_load_is_offline_and_creates_nothing(tmp_path):

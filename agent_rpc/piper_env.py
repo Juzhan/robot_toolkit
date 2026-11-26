@@ -15,7 +15,7 @@ import numpy as np
 
 from ..core.mathutils import matrix_to_rotvec, rotvec_to_matrix, rotation_angle
 from ..errors import NotSupported, RobotUnavailable, SafetyViolation
-from ..robot_platform import RobotPlatform
+from ..runtime.robot_platform import RobotPlatform
 from .env import EnvService
 
 

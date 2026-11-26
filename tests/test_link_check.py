@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from robot_toolkit import link_check
+from robot_toolkit.runtime import link_check
 
 
 class _Robot:

@@ -12,13 +12,13 @@ from dataclasses import dataclass, field, fields
 
 import numpy as np
 
-from .camera.hub import CameraHub
-from .collect.observation import RobotCameraSynchronizer
-from .core.mathutils import pose_error
-from .errors import Aborted, NotSupported, RobotUnavailable, SafetyViolation
-from .gripper.base import GripperBackend, GripperState
-from .robot.base import RobotBackend, RobotState, _json_value
-from .scene import SceneEstimator, SceneState
+from ..camera.hub import CameraHub
+from ..collect.observation import RobotCameraSynchronizer
+from ..core.mathutils import pose_error
+from ..errors import Aborted, NotSupported, RobotUnavailable, SafetyViolation
+from ..gripper.base import GripperBackend, GripperState
+from ..robot.base import RobotBackend, RobotState, _json_value
+from ..perception.scene import SceneEstimator, SceneState
 
 
 @dataclass

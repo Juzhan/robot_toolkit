@@ -3,7 +3,7 @@ import argparse
 import json
 from pathlib import Path
 
-from ..profiles import build_robot
+from ..runtime.profiles import build_robot
 from .quality import validate_identity, write_json
 from .view_plan import generate, save_preview
 from .identity import calibration_identity

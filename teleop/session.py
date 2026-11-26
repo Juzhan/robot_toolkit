@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from ..core.conventions import RobotSpec
 from ..gripper import MockGripper
-from ..profiles import build_gripper, build_robot
+from ..runtime.profiles import build_gripper, build_robot
 from ..robot import MockRobot
 from .base import ScriptedSource, TeleopCommand, TeleopSource
 from .joycon import JoyConSource, load_joyconrobotics

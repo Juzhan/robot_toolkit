@@ -34,7 +34,7 @@
 
 目的是只保留一个默认速度入口，避免多个默认常量互相覆盖。
 
-### 2. `robot_toolkit/profiles.py`
+### 2. `robot_toolkit/runtime/profiles.py`
 
 位置：`build_robot()` 中的 `if profile.safety:` 分支。
 

@@ -62,7 +62,7 @@ def robot_status(robot, probe_s: float = 0.25) -> dict:
 def leader_status(robot) -> dict | None:
     if not hasattr(robot, 'leader_feedback'):
         return None
-    from .collect.passive import read_leader
+    from ..collect.passive import read_leader
     return read_leader(robot)
 
 
@@ -136,7 +136,7 @@ def run_link_check(robot, gripper=None, cameras=(), log=print) -> tuple[bool, st
         ok = False
     leader = leader_status(robot)
     if leader is not None:
-        from .collect.passive import leader_label
+        from ..collect.passive import leader_label
         grip = f'，夹爪指令 {leader["gripper"] * 1000:.1f}mm' if leader['gripper_ok'] else ''
         log(f'主臂：{leader_label(leader)}{grip}')
         clauses.append(leader_label(leader))

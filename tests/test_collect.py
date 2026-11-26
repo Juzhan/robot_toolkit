@@ -22,7 +22,7 @@ from robot_toolkit.errors import DatasetError
 from robot_toolkit.errors import RobotUnavailable
 from robot_toolkit.robot import MockRobot
 from robot_toolkit.robot.base import RobotState
-from robot_toolkit.profiles import build_robot
+from robot_toolkit.runtime.profiles import build_robot
 from robot_toolkit.teach import Trajectory
 
 

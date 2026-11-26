@@ -28,7 +28,7 @@ import numpy as np
 
 from ..control import (TrajectoryLimits, check_trajectory, min_jerk, run_trajectory,
                        trajectory_peaks)
-from ..profiles import build_robot
+from ..runtime.profiles import build_robot
 from ..robot import AgxPiperConfig
 
 

@@ -19,7 +19,7 @@ from ..collect.passive import sample_episodes
 from ..config import build_dataclass
 from ..core.safety_envelope import SafetyEnvelope
 from ..errors import DatasetError
-from ..profiles import build_camera_hub, build_gripper, build_robot
+from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
 from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
                      load_trajectory, save_trajectory, state_line, summarize)
 from ..teleop import ButtonHub
@@ -208,7 +208,7 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
                 print(message, flush=True)
                 voice.say(message)
             elif button == 'home':
-                from ..link_check import run_link_check
+                from ..runtime.link_check import run_link_check
                 print(state_line(robot, gripper), flush=True)
                 print(f'当前上一条轨迹：{last_name or "(none)"}', flush=True)
                 _ok, summary = run_link_check(robot, gripper, cameras,

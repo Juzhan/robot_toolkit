@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 
 from robot_toolkit.camera.base import CameraFrame
-from robot_toolkit.external_tools import ExternalToolError, ToolRuntime, Sam3Client, Segmentation, SegmentationResult
-from robot_toolkit.perception import (
+from robot_toolkit.perception.external_tools import ExternalToolError, ToolRuntime, Sam3Client, Segmentation, SegmentationResult
+from robot_toolkit.perception.perception import (
     AnyGraspClient, BundleSdfClient, PerceptionFrame, _encode_array, inspect_object,
 )
 
@@ -184,7 +184,7 @@ def test_bundle_health_is_not_model_readiness(tmp_path, monkeypatch):
 
 
 def test_new_clients_stay_disabled_by_default(tmp_path):
-    from robot_toolkit.external_tools import ExternalTools
+    from robot_toolkit.perception.external_tools import ExternalTools
 
     tools = ExternalTools.load(root=tmp_path)
     for client in (tools.bundlesdf(), tools.anygrasp()):
@@ -194,7 +194,7 @@ def test_new_clients_stay_disabled_by_default(tmp_path):
 
 def test_reconstruction_preserves_metric_frame_and_rejects_stale_pose():
     pytest.importorskip('open3d')
-    from robot_toolkit.reconstruction import ObjectReconstruction, distinct_masks
+    from robot_toolkit.perception.reconstruction import ObjectReconstruction, distinct_masks
 
     frame = frame_at()
     mask = np.ones(frame.depth_m.shape, dtype=bool)
@@ -217,7 +217,7 @@ def test_reconstruction_preserves_metric_frame_and_rejects_stale_pose():
 def test_stationary_registration_requires_independent_synchronized_views():
     o3d = pytest.importorskip('open3d')
     from dataclasses import replace
-    from robot_toolkit.reconstruction import register_stationary_views
+    from robot_toolkit.perception.reconstruction import register_stationary_views
 
     frame = frame_at()
     mask = np.ones(frame.depth_m.shape, dtype=bool)
@@ -241,8 +241,8 @@ def test_stationary_registration_requires_independent_synchronized_views():
 def test_stereo_depth_client_and_registration(monkeypatch):
     import base64
     import io
-    from robot_toolkit.external_tools import ToolRuntime
-    from robot_toolkit.perception import StereoDepthClient, register_depth
+    from robot_toolkit.perception.external_tools import ToolRuntime
+    from robot_toolkit.perception.perception import StereoDepthClient, register_depth
 
     sent = {}
 

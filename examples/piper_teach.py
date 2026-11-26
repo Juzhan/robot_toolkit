@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from ..profiles import build_gripper, build_robot
+from ..runtime.profiles import build_gripper, build_robot
 from ..teach import (Replayer, joint_motion, keyboard_teach, load_trajectory,
                      save_trajectory, summarize)
 

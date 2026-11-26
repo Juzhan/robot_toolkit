@@ -131,7 +131,7 @@ def test_collector_writes_per_frame_timestamps(tmp_path):
     import json
     from types import SimpleNamespace
     from robot_toolkit.collect import EpisodeCollector
-    from robot_toolkit.profiles import build_camera
+    from robot_toolkit.runtime.profiles import build_camera
     camera = build_camera('mock', name='wrist_camera', width=32, height=24, fps=30, depth=True)
     schema = DatasetSchema(robot=RobotSpec.ur5e(), cameras=(CameraSpec.from_camera(camera),),
                            fps=10, repo_id='local/robot_toolkit_timing_test')

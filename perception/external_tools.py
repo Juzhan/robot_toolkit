@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 import numpy as np
 
 
-_REPO_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _outside_repo(path) -> Path:
@@ -141,19 +141,19 @@ class ExternalTools:
         return Sam3Client(self.runtime(name))
 
     def anygrasp(self):
-        from .perception import AnyGraspClient
+        from ..perception.perception import AnyGraspClient
 
         return AnyGraspClient(self.runtime('anygrasp'))
 
     def stereo_depth(self, name: str = 'fast_foundationstereo'):
-        from .perception import StereoDepthClient
+        from ..perception.perception import StereoDepthClient
 
         if self.definitions[name].adapter != 'stereo_depth_http':
             raise ValueError(f'{name} has no stereo depth adapter')
         return StereoDepthClient(self.runtime(name))
 
     def bundlesdf(self):
-        from .perception import BundleSdfClient
+        from ..perception.perception import BundleSdfClient
 
         return BundleSdfClient(self.runtime('bundlesdf'))
 

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from robot_toolkit.perception import PerceptionFrame
-from robot_toolkit.reconstruction import ObjectReconstruction, distinct_masks
+from robot_toolkit.perception.perception import PerceptionFrame
+from robot_toolkit.perception.reconstruction import ObjectReconstruction, distinct_masks
 
 
 def reconstruct(frames: Path, detections: Path, output: Path, step: int = 0):

@@ -19,7 +19,7 @@ from ..collect.passive import sample_episodes
 from ..config import build_dataclass
 from ..core.safety_envelope import SafetyEnvelope
 from ..errors import DatasetError
-from ..profiles import build_camera_hub, build_gripper, build_robot
+from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
 from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
                      load_trajectory, save_trajectory, state_line, summarize)
 from ..teleop import ButtonHub
@@ -143,7 +143,7 @@ def _master_slave_session(task: TaskConfig, robot, cameras, schema, root, fps) -
             elif name == 'home':
                 status()
                 if not collector.active:
-                    from ..link_check import run_link_check
+                    from ..runtime.link_check import run_link_check
                     _ok, summary = run_link_check(robot, cameras=cameras, log=say)
                     voice.say(summary)
             elif name == 'plus':

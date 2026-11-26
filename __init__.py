@@ -15,9 +15,9 @@ from .errors import (Aborted, CalibrationError, ConfigurationError, ConnectionFa
                      DatasetError, NotSupported, ProtectiveStop, RobotToolkitError,
                      RobotUnavailable, SafetyViolation)
 from .robot.base import Capabilities, RobotBackend, RobotState
-from .robot_platform import ExecutionRecord, Observation, RobotPlatform
-from .reports import PlatformReports, with_reports
-from .scene import (LayoutCheck, ObjectSpec, ObjectState, PlacementCondition,
+from .runtime.robot_platform import ExecutionRecord, Observation, RobotPlatform
+from .runtime.reports import PlatformReports, with_reports
+from .perception.scene import (LayoutCheck, ObjectSpec, ObjectState, PlacementCondition,
                     PlanarColorEstimator, ResetLayoutVerifier, SceneSpec, SceneState)
 
 __version__ = '0.1.0'
