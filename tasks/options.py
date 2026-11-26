@@ -141,55 +141,6 @@ class HandDemoOptions:
 
 
 @dataclass
-class CalibrateOptions:
-    """Board-based calibration driven from the task file.
-
-    ``kind``: ``handeye`` (robot/board pose pairs), ``intrinsics`` (board views
-    only) or ``both``.  Hand-eye needs the robot's TCP; intrinsics only needs
-    the camera, but the robot profile is still used when present.
-    """
-
-    kind: str = 'handeye'
-    eye: str = 'eye_in_hand'
-    camera: str = ''
-    # ``chessboard``: ``pattern`` = inner corners.  ``charuco``: ``squares`` =
-    # squares per side of the board in assets/board_charuco_300dpi.pdf.
-    board: str = 'chessboard'
-    pattern: list = field(default_factory=lambda: [9, 6])
-    squares: list = field(default_factory=lambda: [7, 10])
-    aruco_dict: str = 'DICT_5X5_100'
-    marker_size: float = 0.0
-    min_corners: int = 6
-    square_size: float = 0.025
-    min_samples: int = 8
-    path: str = ''
-    apply: bool = False
-    # Automated scanning: the host drives the arm through the pose list, checks
-    # the board at every stop and solves at the end.  Only for a single,
-    # host-controlled arm (not for a hardware-linked leader/follower pair) and
-    # requires --yes because it moves the robot.
-    auto: bool = False
-    poses: list = field(default_factory=list)
-    pose_count: int = 10
-    pose_delta_rad: float = 0.25
-    pose_seed: int = 0
-    settle_s: float = 0.8
-    speed_scale: float = 0.3
-    safety_path: str = ''
-    require_safety_envelope: bool = True
-    require_initial_board: bool = True
-    path_clearance_m: float = 0.01
-    quality_protocol: bool = False
-    action: str = 'solve'
-    frames_per_pose: int = 6
-    verify_samples: int = 8
-    verify_after: bool = False
-    solution_path: str = ''
-    intrinsics_mode: str = 'auto'
-    pose_plan_path: str = ''
-
-
-@dataclass
 class SafetyOptions:
     """Human-guided safety envelope capture for any RobotBackend."""
 
