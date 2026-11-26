@@ -9,7 +9,6 @@
 | --- | --- | --- |
 | `ur5e_real_collect/config.py` | `config.py`, `runtime/profiles.py` | 通用 JSON + dataclass 配置；机器人/夹爪/相机用 profile 构建 |
 | `ur5e_real_collect/robot.py` | `robot/ur_rtde.py` | 同一套 RTDE 逻辑，多一个统一接口；`mock=True` 可直接离线跑 |
-| `ur5e_real_collect/robot.py` | `robot/ur_rtde.py` | 用同一 `RobotBackend` 契约的 UR RTDE 驱动替换旧驱动 |
 | `ur5e_real_collect/gripper.py` | `gripper/robotiq.py` | 宽度统一为米；mock / URScript / URCap / Modbus 后端保留 |
 | `ur5e_real_collect/cameras.py` | `camera/*` | RealSense / OpenCV / Mock + `CameraHub` 同步与过期检测 |
 | `ur5e_real_collect/trajectory.py` | `teach/trajectory.py` | 轨迹格式、平滑、重采样、停顿检测、夹爪事件完全对齐 |
@@ -41,10 +40,10 @@
 
 ### 第 2 步：换“机器人接口”
 
-1. 真机：`LegacyUrRobot(existing_URRobot(...))`，先只用 `state()`；
+1. 离线：`UrRtdeRobot(UrRtdeConfig(mock=True))`，只调 `state()`，确认接口对得上；
 2. 用 `TeachRecorder` 录一条轨迹，和旧 `teach.py` 录的轨迹对比 q/tcp/grip；
-3. 用 `Replayer` 以 0.1 速空跑（不夹爪、不录像），确认轨迹一致；
-4. 再切换 `UrRtdeRobot`（自带 freedrive / servo / 安全封装）。
+3. 在离线后端上用 `Replayer` 以 0.1 速空跑（不夹爪、不录像），确认轨迹一致；
+4. 再切真机：`UrRtdeConfig(ip=...)`，`mock=False`，自带 freedrive / servo / 安全封装。
 
 ### 第 3 步：换“仿真控制”
 
