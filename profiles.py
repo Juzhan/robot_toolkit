@@ -116,6 +116,7 @@ def build_gripper(kind: str = 'mock', spec: GripperSpec | None = None,
         spec = getattr(getattr(provided_robot, 'spec', None), 'gripper', None)
     spec = spec or GripperSpec()
     if kind == 'mock':
+        options.pop('robot', None)
         return MockGripper(name=spec.name, max_width=spec.max_width,
                            min_width=spec.min_width, **options)
     if kind in ('robotiq', 'robotiq_2f85'):
