@@ -517,6 +517,59 @@ outputs/robot_toolkit_demo/
 └── summary.json
 ```
 
+### 5.5 真机环境准备与 UR5e 启动案例
+
+依赖分两层：本库本身只要 NumPy；机器人 SDK 装在现场用的解释器里。
+
+```bash
+# 解释器换成现场用的 venv，仓库路径换成自己的 checkout
+$PY -m pip install -e /path/to/robot_toolkit              # 本库
+$PY -m pip install pyrealsense2                           # RealSense 相机
+$PY -m pip install -e "/path/to/robot_toolkit[piper]"     # Piper：pyAgxArm + python-can
+$PY -m pip install ur_rtde                                # UR5e：rtde_control / rtde_receive
+```
+
+不需要 activate。`scripts/realrun.sh` 固定解释器和 `PYTHONPATH`，`PY=` 可覆盖：
+
+```bash
+./scripts/realrun.sh env     # 列出解释器与各 SDK 是否就绪
+```
+
+| 缺什么 | 影响 | 处理 |
+|---|---|---|
+| `pyrealsense2` | 相机打不开 | `pip install pyrealsense2` |
+| `pyAgxArm` | Piper 连不上 CAN | 装 `[piper]` extra |
+| `rtde_control` | UR5e 连接直接报错 | `pip install ur_rtde` |
+| `uni_robot_agent` / `fastapi` | `execute` 起不来服务 | 仓库路径加进 `PYTHONPATH`（脚本已处理） |
+
+**UR5e 案例**（mock，不动硬件，先确认配置与链路）：
+
+```bash
+MOCK=1 ./scripts/realrun.sh nudge ur5e_agent 0 0 3
+# start xyz_m [0.3, 0.0, 0.3] / delta_m [0.0, 0.0, 0.03] / steps 2
+# step 1/2 accepted=True outcome=completed
+# step 2/2 accepted=True outcome=completed
+# end xyz_m [0.3, 0.0, 0.33]
+```
+
+真机（**会让机械臂动**，先在现场确认急停可用）：
+
+```bash
+./scripts/realrun.sh observe ur5e_agent        # 只读：连上、拍照、读状态，不发送动作
+./scripts/realrun.sh nudge ur5e_agent 0 0 3    # 控制点沿世界 +Z 移动 3 cm
+```
+
+上真机前必须确认 `configs/tasks/ur5e_agent.json`：
+
+- `robot.options.ip`（当前 `192.168.1.50`）与 `gripper.options.urcap_port`（63352）对应现场设备
+- 两个相机 `serial`：腕部 `846112070112`、外部 `342522071753`
+- `agent.T_world_base` 仍是单位矩阵，需要按场景标定后填入
+
+标定在 `configs/calibration/ur5e_collect_cameras.json`（腕部 eye-in-hand、外部 eye-to-hand）。
+
+`execute` 只起服务、等规划器客户端发 `/steps`；`INSTRUCTION` 只是元数据，不会自己动。
+要验证位移用 `nudge`，要跑完整一局接 StrangeLoop 的中间件。
+
 ---
 
 ## 6. 核心用法
