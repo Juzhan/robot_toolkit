@@ -111,7 +111,7 @@ class HandDemoOptions:
     tracker: str = ''
     # 'keyboard' or 'joycon'; Joy-Con maps B/A to start/save.
     input: str = 'keyboard'
-    # Reuse collect.speech (ported from ur5e_real_collect) for clip feedback.
+    # Speak the clip start/save/end cues through collect.speech.
     voice: bool = True
 
 @dataclass

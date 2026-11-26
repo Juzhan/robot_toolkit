@@ -5,8 +5,8 @@
 > 一套契约，多种后端。仿真、UR5、Piper 以及以后新增的机械臂，共用同一套
 > 遥操、示教、回放、采集、标定和数据集代码。
 
-可以独立安装使用。已有 UR 业务代码迁移时，把驱动换成 `robot.ur_rtde`
-即可复用这里的示教 / 回放 / 采集流程，不再需要额外的适配层。
+可以独立安装使用：装好对应 SDK 后，同一份任务配置在 mock、仿真和真机之间切换，
+示教、回放、采集、标定的代码不变。
 
 > **安装什么、能干什么**：核心只需 NumPy；UR 真机、Piper、RealSense、连续动作流、
 > agent 服务、LeRobot 导出等按需选装，对照表见
@@ -127,7 +127,7 @@ robot_toolkit/
 │   ├── session.py            # 机器人/夹爪/相机 -> episode 采集会话
 │   ├── passive.py            # 被动采样循环（只读，供主从示教/配置驱动复用）
 │   ├── hand_demo.py          # 仅视频的人手演示采集（预留手部跟踪接口）
-│   ├── speech.py             # 语音播报（移植自 ur5e_real_collect，蓝牙保持流/预抢占）
+│   ├── speech.py             # 语音播报（蓝牙保持流、抢占与重试）
 │   ├── audio.py              # 提示音与唤醒音
 │   ├── observation.py        # CameraFrame -> images/depth
 │   └── export.py             # LeRobot / manifest / 视频数据集导出
@@ -143,7 +143,6 @@ robot_toolkit/
 │   ├── piper_collect.py      # Piper 主从示教被动采样 / 遥控 / 轨迹 -> 数据集
 │   └── joycon_teleop.py      # 同一 Joy-Con 栈驱动 UR5e / Piper X
 ├── assets/                   # 可打印的 ChArUco 标定板（PDF / PNG）
-├── MIGRATION.md              # 旧工程迁移对照表
 ├── PIPER.md                  # Piper SDK 安装、CAN、控制与安全
 ├── TELEOP.md                 # UR/Piper 共用遥操作分层与控制注意事项
 ├── pyproject.toml            # 打包配置；可选依赖 extras 清单见 5.0 节
@@ -1034,24 +1033,11 @@ Piper：`RobotSpec.piper_x()` 已经提供关节/夹爪命名；真机按上面�
 因为纯位置执行器在重力下会有稳态下垂，和真机伺服的手感不一致。
 实测 UR5e 场景：`servo_l` 追踪误差约 0.15 mm，`move_j` 正常收敛。
 
-差别只存在于后端内部；示教、回放、采集、遥操循环完全相同。旧工程可以按
-[MIGRATION.md](./MIGRATION.md) 的对照表逐步迁移到这一层。
+差别只存在于后端内部；示教、回放、采集、遥操循环完全相同。
 
 ---
 
-## 9. 接入旧代码与数据
-
-* **驱动替换**：把旧 UR 驱动换成 `robot.ur_rtde.UrRtdeRobot`（同样实现
-  `RobotBackend`），即可用新的 `TeachRecorder` / `Replayer` / `EpisodeRecorder`；
-  旧驱动继续留在原工程里用，不再维护一层包装。
-* **数据兼容**：状态/动作命名、深度约定、`T_world_camera` 都与既有数据集一致；
-  LeRobot 导出使用相同的 feature 结构，可直接进入 LeRobot / 扩散策略等训练流程。
-* **迁移路径**：先替换“录制/回放/导出”，再替换“机器人/夹爪/相机驱动”，
-  最后把 UI 与业务会话留在应用层。详见 [MIGRATION.md](./MIGRATION.md)。
-
----
-
-## 10. 依赖
+## 9. 依赖
 
 | 功能 | 必需 | 可选 |
 | --- | --- | --- |
@@ -1074,7 +1060,7 @@ Piper：`RobotSpec.piper_x()` 已经提供关节/夹爪命名；真机按上面�
 
 ---
 
-## 11. 安全
+## 10. 安全
 
 * 真机第一次回放务必 `speed_scale=0.3`，人守在急停旁；
 * `Replayer` 会在超速时直接拒绝，除非显式 `allow_fast=True`；

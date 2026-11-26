@@ -1,7 +1,7 @@
 """Voice cues through Windows SAPI or macOS ``say``, off the main control thread.
 
-Ported from ``projects/ur5e_real_collect/speech.py`` so the collection flows
-share the same voice behaviour instead of keeping two implementations.
+The Bluetooth keep-alive stream and pre-emption avoid the long silence a
+freshly opened audio device otherwise introduces before every cue.
 
 真机反馈驱动的规则：
 1. 完整播报：通报串行播放，正在播的内容不会被下一条从中间截断；

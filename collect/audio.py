@@ -1,6 +1,6 @@
 """Cross-platform short audio cues.
 
-Ported from ``projects/ur5e_real_collect/audio.py``; the WAV assets live in
+The WAV assets live in
 ``robot_toolkit/assets/audio``.
 
 Windows uses ``winsound``; macOS uses ``afplay``/``osascript``; Linux uses

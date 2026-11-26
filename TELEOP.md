@@ -42,7 +42,7 @@
    - 原 `joycon_hub` 用报告时间/读取线程存活检测断线并重连。
    - 现在 `JoyConSource.fresh()` 优先使用 `joycon.report_received_at`；
      `TeleopRunner` 在超过 `stale_s` 没有新命令时调用 `stop_motion()`。
-   - 配对/重连仍留在应用层（见 `MIGRATION.md`），避免把蓝牙策略塞进通用库。
+   - 配对/重连属于应用层，通用库只暴露输入源与新鲜度判断。
 
 4. **夹爪按钮**
    - 原 Joy-Con 默认用 ZR 切换夹爪，也支持 `change_down_to_gripper`。
