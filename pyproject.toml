@@ -71,6 +71,8 @@ packages = [
     "robot_toolkit.robot",
     "robot_toolkit.teach",
     "robot_toolkit.teleop",
+    "robot_toolkit.agent",
+    "robot_toolkit.agent_rpc",
 ]
 
 [tool.setuptools.package-data]
