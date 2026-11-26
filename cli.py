@@ -132,20 +132,53 @@ def cmd_info(args) -> int:
     return 0
 
 
+#: ``doctor`` groups: (title, pip extra, import names).  The extra is what the
+#: user should install to make the whole group available; ``None`` is required.
+_DOCTOR_GROUPS = (
+    ('核心（必需）', None, ('numpy',)),
+    ('标定 / 视觉（ChArUco、质量评估、位姿规划）', 'vision', ('cv2', 'scipy')),
+    ('连续运动（auto/ruckig 动作流）', 'control', ('ruckig',)),
+    ('UR3/UR5/UR10 真机', 'ur', ('rtde_control', 'rtde_receive')),
+    ('Piper / Piper X', 'piper', ('can', 'pyAgxArm')),
+    ('Robotiq Modbus', 'modbus', ('pymodbus',)),
+    ('RealSense 深度相机', 'cameras', ('pyrealsense2',)),
+    ('Agent HTTP 服务（robot_toolkit.agent.uni）', 'server', ('fastapi', 'uvicorn')),
+    ('LeRobot 数据集导出', 'lerobot', ('lerobot',)),
+    ('Windows 语音播报（collect.speech）', 'voice', ('comtypes',)),
+    ('点云 / 重建', 'reconstruction', ('open3d',)),
+    ('MuJoCo 仿真示例', 'sim', ('mujoco',)),
+    ('Joy-Con 遥操', 'joycon', ('hid',)),
+    ('宿主 IK / 运动规划', 'ik', ('warp', 'robokit')),
+    ('测试', 'dev', ('pytest',)),
+)
+
+
 def cmd_doctor(args) -> int:
-    modules = ['numpy', 'scipy', 'cv2', 'mujoco', 'lerobot', 'ur_rtde', 'pyrealsense2',
-               'pymodbus', 'can', 'pyAgxArm']
-    for name in modules:
-        try:
-            module = importlib.import_module(name)
-            version = getattr(module, '__version__', 'unknown')
-        except Exception as exc:
-            version = f'MISSING ({type(exc).__name__})'
-        print(f'{name:14s} {version}')
-    print(f'python       {sys.version.split()[0]}')
-    print(f'platform     {platform.system()} {platform.release()} ({platform.machine()})')
-    print(f'robotiq port  {RobotiqConfig().serial_port}')
-    print('piper CAN    Windows agx_cando/0; Linux socketcan/can0; macOS slcan/ttyACM0')
+    print(f'robot_toolkit {__version__}')
+    print(f'python        {sys.version.split()[0]}')
+    print(f'platform      {platform.system()} {platform.release()} ({platform.machine()})')
+    missing = []
+    for title, extra, modules in _DOCTOR_GROUPS:
+        hint = '' if extra is None else f'    pip install -e ".[{extra}]"'
+        print(f'\n{title}{hint}')
+        for name in modules:
+            try:
+                module = importlib.import_module(name)
+                version = str(getattr(module, '__version__', 'ok'))
+            except Exception as exc:
+                version = f'MISSING ({type(exc).__name__})'
+                missing.append((name, extra))
+            print(f'  {name:14s} {version}')
+    print(f'\nrobotiq port  {RobotiqConfig().serial_port}')
+    print('piper CAN     Windows agx_cando/0; Linux socketcan/can0; macOS slcan/ttyACM0')
+    if missing:
+        print(f'\n缺少 {len(missing)} 个可选模块：')
+        for name, extra in missing:
+            target = f'pip install -e ".[{extra}]"' if extra else '核心依赖，必须安装'
+            print(f'  {name:14s} {target}')
+        print('\n常用组合：pip install -e ".[vision,control,ur,cameras,server,dev]"')
+    else:
+        print('\n所有可选模块均已安装。')
     return 0
 
 

@@ -12,6 +12,12 @@
 
 官方 SDK 从 GitHub 安装；Windows 还必须安装 AgileX CANDO 的 `python-can` 插件。
 
+在仓库根目录用 extra 一次装齐（等价于下面三行，见 README 5.0 节）：
+
+```powershell
+pip install -e ".[piper]"
+```
+
 Windows（当前机器）：
 
 ```powershell

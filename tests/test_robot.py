@@ -312,6 +312,44 @@ def test_ur_status_labels_controller_feedback_without_connecting():
     assert with_reports(RobotPlatform(robot)).move_j([0.0] * 6)['reason'] == 'not_ready'
 
 
+def test_ur_rtde_refuses_motion_when_pendant_speed_slider_is_zero():
+    """A zero speed slider accepts commands without moving, so fail before sending."""
+    from robot_toolkit.errors import RobotUnavailable
+
+    calls = []
+    control = types.SimpleNamespace(
+        servoJ=lambda *args, **kwargs: calls.append('servoJ') or True,
+        servoL=lambda *args, **kwargs: calls.append('servoL') or True,
+        moveJ=lambda *args, **kwargs: calls.append('moveJ') or True,
+        moveL=lambda *args, **kwargs: calls.append('moveL') or True)
+    robot = UrRtdeRobot(UrRtdeConfig(ip='127.0.0.1'), mock=False)
+    robot._connected = True
+    robot.control = control
+    robot.receive = types.SimpleNamespace(getSpeedScaling=lambda: 0.0)
+
+    with pytest.raises(RobotUnavailable):
+        robot.servo_j([0.0] * 6, 0.01)
+    with pytest.raises(RobotUnavailable):
+        robot.move_j([0.0] * 6, wait=False)
+    assert calls == []
+
+    robot.receive = types.SimpleNamespace(getSpeedScaling=lambda: 0.5)
+    assert robot.servo_j([0.0] * 6, 0.01)
+    assert calls == ['servoJ']
+
+
+def test_ur_rtde_unreadable_speed_slider_does_not_block_motion():
+    calls = []
+    robot = UrRtdeRobot(UrRtdeConfig(ip='127.0.0.1'), mock=False)
+    robot._connected = True
+    robot.receive = types.SimpleNamespace()
+    robot.control = types.SimpleNamespace(
+        moveJ=lambda *args, **kwargs: calls.append('moveJ') or True)
+    assert robot.move_j([0.0] * 6, wait=False)
+    assert calls == ['moveJ']
+    assert robot.speed_scaling() is None
+
+
 def test_mock_robot_tracks_servo_targets():
     robot = MockRobot(RobotSpec.generic(2, 'two'), max_velocity=1.0)
     assert robot.connected

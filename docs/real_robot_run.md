@@ -121,6 +121,89 @@ INSTRUCTION="<具体任务描述>" ./scripts/realrun.sh execute ur5e_agent
 
 `OUT` 必须是不存在的目录，未指定时用 `/tmp/<mode>_<时间戳>`；`PORT` 默认 19360。
 
+## Windows：本机 UR5（192.168.1.50）
+
+上面几节针对 Linux 的 `scripts/realrun.sh`。Windows 没有这个脚本，直接用 conda `base`
+解释器，不要新建环境。一键装齐（仓库根目录）：
+
+```powershell
+pip install -e ".[ur,cameras,server,vision,control]"
+python -m robot_toolkit.cli doctor        # 按功能核对，缺什么会给出对应 extra
+```
+
+实测依赖：
+
+| 组件 | 版本 |
+|---|---|
+| Python | `D:\app\conda\python.exe` 3.13.5 |
+| ur_rtde | 1.6.6（cp313 win_amd64 wheel） |
+| pyrealsense2 | 2.59.2 |
+| fastapi / uvicorn | 0.165 / 0.54 |
+| opencv-python | 4.14.0（`vision` 可选依赖） |
+| ruckig | 0.19.4（`control` 可选依赖，连续回放需要） |
+
+### 网络（必须先做对）
+
+- 有线走 USB 网卡（ASIX USB GbE），静态地址 `192.168.1.100`，掩码 `255.255.255.0`，**网关留空**。
+- 机器人是 `192.168.1.50`。本机网卡**不能也设成 `.50`**：Windows 会把地址标成
+  `AddressState=Duplicate`，`ping` 全部超时。
+- Clash Verge / `verge-mihomo` 的 TUN 会劫持 `192.168.1.50`（`Find-NetRoute` 显示
+  NextHop `198.18.0.1`），RTDE 报 `RuntimeError: read: End of file`。把
+  `192.168.1.0/24` 设为直连，或临时关闭 TUN。
+
+自检：
+
+```powershell
+Get-NetIPAddress -InterfaceAlias '以太网 3' -AddressFamily IPv4
+Find-NetRoute -RemoteIPAddress 192.168.1.50   # InterfaceAlias 必须是物理网卡，不是 Meta
+ping 192.168.1.50
+```
+
+### 只读验证（不动机械臂）
+
+```powershell
+@'
+from rtde_receive import RTDEReceiveInterface
+r = RTDEReceiveInterface("192.168.1.50", 125.0)
+print("connected:", r.isConnected(), "mode:", r.getRobotMode(), "safety:", r.getSafetyMode())
+print("q_deg:", [round(v * 57.29578, 2) for v in r.getActualQ()])
+print("tcp:", [round(v, 4) for v in r.getActualTCPPose()])
+print("speed_scaling:", r.getSpeedScaling())
+r.disconnect()
+'@ | python -
+```
+
+走项目自己的适配器：
+
+```powershell
+$env:PYTHONPATH='D:\ws\robot'
+@'
+import numpy as np
+from robot_toolkit.task_runner import load_task_config
+from robot_toolkit.profiles import build_robot
+task = load_task_config("ur5e_agent")
+robot = build_robot(task.robot, mock=False)
+robot.connect_read_only()
+state = robot.state()
+print(np.round(np.degrees(state.q), 2).tolist())
+print(np.round(state.tcp, 4).tolist())
+robot.disconnect()
+'@ | python -
+```
+
+### Windows 上踩过的坑
+
+- **`speed_scaling = 0`**：示教器速度滑块在 0% 时控制器照样接受 `moveJ`/`servoJ`，
+  只是机器人不动，很容易误判成"执行成功"。`robot/ur_rtde.py` 现在会在发送运动指令前
+  读一次速度标度，为 0 时直接抛 `RobotUnavailable`；读不到不影响发送。
+- **相机没插**：`Station.open()` 会等满 8 秒后抛 `cameras did not deliver frames`，
+  只验证机械臂时不要走 `agent.uni`。
+- **机型是 UR5（CB3，PolyScope 3.15.2）**，实测 `robot_mode=7`、`safety_mode=1`。
+  仓库的 `RobotSpec.ur5e()` 只提供关节名，运动学由控制器解算，宿主侧不受影响；
+  只有接 `robot/ik.py` 的外部 URDF IK 才需要区分 UR5 与 UR5e。
+- `ur_rtde 1.6.6` 没有 `getTCPOffset()`，TCP 偏移看 `configs/tasks/ur5e_agent.json`
+  的 `tcp_offset` 或示教器配置。
+
 ## 注意事项
 
 - UR5e 相机序列号：wrist `846112070112`，external `342522071753`，标定文件

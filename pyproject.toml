@@ -28,9 +28,23 @@ classifiers = [
 dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
-vision = ["opencv-python>=4.8,<5"]
+vision = ["opencv-python>=4.8,<5", "scipy>=1.10"]
 reconstruction = ["open3d>=0.19,<0.20"]
 control = ["ruckig>=0.12"]
+# UR3/UR5/UR10 (CB3 and e-Series) over RTDE.  Prebuilt wheels exist for
+# cp39-cp314 on Windows, Linux and macOS; no UR SDK, URCap or ROS install needed.
+ur = ["ur_rtde>=1.6,<2"]
+# RealSense RGB-D capture.  Includes OpenCV so USB cameras work from the same extra.
+cameras = ["pyrealsense2>=2.54", "opencv-python>=4.8,<5"]
+# HTTP agent surface: python -m robot_toolkit.agent.uni
+server = ["fastapi>=0.110", "uvicorn>=0.29"]
+# Robotiq over Modbus (tool_modbus / modbus_rtu backends).
+modbus = ["pymodbus>=3.6,<4"]
+# LeRobotDataset export / merge / edit.  Leave unpinned to match the dataset version.
+lerobot = ["lerobot"]
+# MuJoCo demos under examples/ (sim_depth_avoidance, run_try_mujoco).
+sim = ["mujoco>=3.0", "Pillow>=10", "imageio>=2.31"]
+dev = ["pytest>=7"]
 # Joy-Con buttons/teleop; the joyconrobotics library itself is bundled in third_party.
 joycon = ["hidapi>=0.14", "PyGLM>=2.7", "scipy>=1.10"]
 voice = ["comtypes>=1.2 ; sys_platform == 'win32'"]

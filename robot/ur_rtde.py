@@ -164,6 +164,26 @@ class UrRtdeRobot(RobotBackend):
             # Unknown safety state must fail closed, not look like a green light.
             raise RobotUnavailable(f'机器人安全查询失败：{exc}') from exc
 
+    def speed_scaling(self):
+        """Teach-pendant speed slider (0..1); ``None`` when it cannot be read.
+
+        The controller keeps accepting ``moveJ``/``servoJ`` at a zero slider and
+        simply does not move, so a missing reading must not be treated as zero.
+        """
+        if self.mock or self.receive is None:
+            return None
+        try:
+            return float(self.receive.getSpeedScaling())
+        except Exception:
+            return None
+
+    def _require_speed_slider(self) -> None:
+        scaling = self.speed_scaling()
+        if scaling is not None and scaling <= 1e-6:
+            raise RobotUnavailable(
+                f'示教器速度标度为 0（speed_scaling={scaling:g}）：控制器会接受指令但机器人不动，'
+                '请把示教器速度滑块调高后再发送运动指令')
+
     # ------------------------------------------------------ realtime period
     def init_period(self):
         """Start the RTDE real-time period on Windows/Linux.
@@ -218,6 +238,7 @@ class UrRtdeRobot(RobotBackend):
             return self._mock_robot.servo_j(joints, dt)
         if self.control is None:
             raise RobotUnavailable('RTDE control interface is not connected')
+        self._require_speed_slider()
         return bool(self.control.servoJ(list(map(float, joints)), 0.0, 0.0, float(dt),
                                        float(self.config.servo_lookahead),
                                        float(self.config.servo_gain)))
@@ -227,6 +248,7 @@ class UrRtdeRobot(RobotBackend):
             return self._mock_robot.servo_l(pose, dt)
         if self.control is None:
             raise RobotUnavailable('RTDE control interface is not connected')
+        self._require_speed_slider()
         return bool(self.control.servoL(list(map(float, pose)), 0.0, 0.0, float(dt),
                                        float(self.config.servo_lookahead * 0.5),
                                        float(self.config.servo_gain)))
@@ -239,6 +261,7 @@ class UrRtdeRobot(RobotBackend):
                                        abort_event=abort_event)
         if self.control is None:
             raise RobotUnavailable('RTDE control interface is not connected')
+        self._require_speed_slider()
         ok = bool(self.control.moveJ(
             list(map(float, joints)),
             float(speed if speed is not None else self.config.approach_speed),
@@ -255,6 +278,7 @@ class UrRtdeRobot(RobotBackend):
             raise NotSupported('MockRobot has no Cartesian model')
         if self.control is None:
             raise RobotUnavailable('RTDE control interface is not connected')
+        self._require_speed_slider()
         ok = bool(self.control.moveL(
             list(map(float, pose)),
             float(speed if speed is not None else self.config.approach_speed * 0.5),

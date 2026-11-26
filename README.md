@@ -8,6 +8,11 @@
 可以独立安装使用，也可以作为现有系统的迁移目标：已有 UR 驱动代码通过
 `adapters/legacy_ur.py` 包装一层，即可接入新的示教/采集流程。
 
+> **安装什么、能干什么**：核心只需 NumPy；UR 真机、Piper、RealSense、连续动作流、
+> agent 服务、LeRobot 导出等按需选装，对照表见
+> [5.0 安装：先决定要驱动什么](#50-安装先决定要驱动什么)。
+> 装完用 `python -m robot_toolkit.cli doctor` 自查，缺什么会直接给出对应 extra。
+
 最直接的用法是**按任务配置文件启动**：
 
 ```powershell
@@ -121,7 +126,7 @@ robot_toolkit/
 ├── MIGRATION.md              # 旧工程迁移对照表
 ├── PIPER.md                  # Piper SDK 安装、CAN、控制与安全
 ├── TELEOP.md                 # UR/Piper 共用遥操作分层与控制注意事项
-├── pyproject.toml            # 打包配置（pip install robot-toolkit）
+├── pyproject.toml            # 打包配置；可选依赖 extras 清单见 5.0 节
 ├── requirements-control.txt  # 可选：Ruckig 参考
 ├── requirements-piper.txt    # 可选：Piper SDK（pyAgxArm + python-can）
 └── tests/                    # 纯 NumPy 测试
@@ -149,7 +154,8 @@ robot_toolkit/
 | 键盘示教 | `msvcrt` | `termios` | `termios` |
 | LeRobot 视频 | FFmpeg/TorchCodec 需正确安装 | 同左 | 同左 |
 
-`python -m robot_toolkit.cli doctor` 会打印当前平台、可选依赖和默认串口。
+`python -m robot_toolkit.cli doctor` 按功能分组打印可选依赖，缺失项会直接给出对应的
+`pip install -e ".[extra]"`，同时显示当前平台和默认串口（安装清单见 5.0 节）。
 上层的坐标系、单位、状态/动作维度和安全逻辑保持一致；跨平台验证应覆盖
 `mock`、真实机器人、相机、手柄、键盘和 LeRobot 导出，而不是只看 Python 能否导入。
 
@@ -197,13 +203,97 @@ RobotSpec.ur5e().state_names
 
 ## 5. 快速开始
 
+### 5.0 安装：先决定要驱动什么
+
+**有源码时不需要安装 `robot_toolkit` 本身。** 在仓库根目录直接 `python run.py ...`
+就能跑，`run.py` 会自己把父目录加进 `sys.path`。只有两种场景才需要
+`pip install -e .`：想在任意目录或别的项目里 `import robot_toolkit`，
+或者想用下面的 extras 一次装齐第三方依赖。
+
+目录约定（和是否安装无关）：
+
+| 命令 | 可以在哪执行 |
+|---|---|
+| `python run.py ...` | 仓库根目录 `robot_toolkit/` |
+| `python -m robot_toolkit.cli ...` | **仓库根目录的父目录**，或任意目录并设 `PYTHONPATH` 指向父目录 |
+| `python -m robot_toolkit.examples...` | 同上 |
+
+在包目录内部直接执行 `python -m robot_toolkit.cli` 会报
+`No module named 'robot_toolkit'`——这是包名解析规则，不是没装依赖。
+
+**核心只依赖 NumPy**，装完就能跑自检、离线演示、mock 全链路和示教/回放/采集。
+其余能力全部按需选装，没有装对应 SDK 时相关命令会明确报缺依赖，不会静默降级。
+
+| 要做什么 | extra | 安装内容 |
+|---|---|---|
+| 离线自检 / mock / 示教回放 / 无相机采集 | 无 | 仅 `numpy` |
+| 标定、ChArUco、图像质量评估、标定位姿规划 | `vision` | `opencv-python`、`scipy` |
+| 连续动作流（`auto` / `ruckig`） | `control` | `ruckig` |
+| UR3 / UR5 / UR10 真机（CB3 与 e-Series） | `ur` | `ur_rtde` |
+| RealSense 彩色 + 对齐深度 | `cameras` | `pyrealsense2`、`opencv-python` |
+| USB 摄像头 | `vision` 或 `cameras` | `opencv-python` |
+| Piper / Piper X（CAN） | `piper` | `pyAgxArm`、`python-can`（Windows 另需 CAN 插件） |
+| Robotiq 经 Modbus（`tool_modbus` / `modbus_rtu`） | `modbus` | `pymodbus` |
+| Agent HTTP 服务（`robot_toolkit.agent.uni`） | `server` | `fastapi`、`uvicorn` |
+| 导出 / 合并 / 编辑 LeRobot 数据集 | `lerobot` | `lerobot`（版本随现场数据集） |
+| 点云与重建 | `reconstruction` | `open3d` |
+| MuJoCo 仿真示例 | `sim` | `mujoco`、`Pillow`、`imageio` |
+| Joy-Con 遥操 | `joycon` | `hidapi`、`PyGLM`、`scipy`（库本体已内置） |
+| Windows 语音播报（`hand_demo` / 提示音） | `voice` | `comtypes`（仅 Windows，其余平台自动降级） |
+| 宿主 IK / 运动规划 | `ik` | `robokit` + `warp`，需从源码安装 |
+| 跑单元测试 | `dev` | `pytest` |
+
 ```powershell
-pip install robot-toolkit          # 发布版
-# 或从源码开发（在仓库根目录执行）：
-pip install -e .
+# 从源码开发（仓库根目录执行；extras 一定要加引号）
+pip install -e .                                      # 只跑离线链路
+pip install -e ".[vision,control]"                    # 标定 + 连续动作流
+pip install -e ".[ur,cameras,server,dev]"             # UR 真机 + 相机 + agent 服务 + 测试
+pip install -e ".[piper]"                             # Piper / Piper X
+
+# 发布版等价写法
+pip install "robot-toolkit[ur,cameras,server]"
 ```
 
-安装后即可运行（不接硬件、不装 SDK 也能跑离线自检和演示）。
+extras 是 pip 的能力，必须伴随安装本包；如果完全不想安装本包，直接装第三方依赖
+也一样能跑。按需逐项安装（与上面的表格一一对应）：
+
+```powershell
+python -m pip install numpy                                        # 核心，必需
+python -m pip install "opencv-python>=4.8,<5" "scipy>=1.10"         # vision
+python -m pip install "ruckig>=0.12"                                # control
+python -m pip install "ur_rtde>=1.6,<2"                             # ur
+python -m pip install "pyrealsense2>=2.54"                          # cameras
+python -m pip install "fastapi>=0.110" "uvicorn>=0.29"              # server
+python -m pip install "pymodbus>=3.6,<4"                            # modbus
+python -m pip install lerobot                                       # lerobot
+python -m pip install "open3d>=0.19,<0.20"                          # reconstruction
+python -m pip install "mujoco>=3.0" "Pillow>=10" "imageio>=2.31"    # sim
+python -m pip install "hidapi>=0.14" "PyGLM>=2.7"                   # joycon
+python -m pip install "comtypes>=1.2"                                # voice（仅 Windows）
+python -m pip install "pytest>=7"                                   # dev
+
+# Piper 与宿主 IK 只能从源码装，见 PIPER.md 和 robot/ik.py 的说明
+python -m pip install "python-can>=4.0"
+python -m pip install "git+https://github.com/agilexrobotics/pyAgxArm.git"
+python -m pip install "git+https://github.com/agilexrobotics/python-can-agx-cando.git"
+```
+
+常见组合一条命令（离线 + 标定 + UR 真机 + 相机 + agent + 测试）：
+
+```powershell
+python -m pip install numpy scipy "opencv-python>=4.8,<5" "ruckig>=0.12" `
+            "ur_rtde>=1.6,<2" "pyrealsense2>=2.54" `
+            "fastapi>=0.110" "uvicorn>=0.29" "pytest>=7"
+```
+
+装完先自查，缺什么、该装哪个 extra 会直接打出来：
+
+```powershell
+python -m robot_toolkit.cli doctor
+```
+
+各后端的硬件侧准备（CAN 驱动、RTDE 网络、相机序列号、真机安全）不在 extras 里，
+分别见 `PIPER.md`、`docs/real_robot_run.md`、`TELEOP.md`。
 
 ### 5.1 主入口：配置文件驱动（`run.bat` / `run.py`）
 
@@ -467,6 +557,9 @@ python -m robot_toolkit.examples.calibration_regression /path/ur5_calib_package_
 
 ### 5.4 诊断与单模块命令
 
+以下命令都在**仓库根目录的父目录**执行（或先设 `PYTHONPATH` 指向它）；若已
+`pip install -e .`，则任意目录均可。
+
 ```powershell
 # 不接硬件，验证核心数学、接口和录制链路
 python -m robot_toolkit.cli selftest
@@ -519,7 +612,8 @@ outputs/robot_toolkit_demo/
 
 ### 5.5 真机环境准备与 UR5e 启动案例
 
-依赖分两层：本库本身只要 NumPy；机器人 SDK 装在现场用的解释器里。
+依赖清单见 [5.0 安装](#50-安装先决定要驱动什么)；本节只讲现场解释器怎么固定和自查。
+原则是两层：本库本身只要 NumPy；机器人 SDK 装在现场用的解释器里。
 
 ```bash
 # 解释器换成现场用的 venv，仓库路径换成自己的 checkout

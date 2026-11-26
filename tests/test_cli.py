@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from robot_toolkit.cli import main
 
@@ -12,6 +15,17 @@ def test_info_and_doctor(capsys):
     assert main(['doctor']) == 0
     output = capsys.readouterr().out
     assert 'robot_toolkit' in output
+
+
+def test_doctor_hints_every_extra_declared_in_pyproject(capsys):
+    """Keep the install hints in ``doctor`` in sync with the packaging extras."""
+    tomllib = pytest.importorskip('tomllib')
+    path = Path(__file__).resolve().parents[1] / 'pyproject.toml'
+    extras = tomllib.loads(path.read_text(encoding='utf-8'))['project']['optional-dependencies']
+    assert main(['doctor']) == 0
+    output = capsys.readouterr().out
+    for extra in extras:
+        assert f'.[{extra}]' in output, f'doctor does not mention the {extra!r} extra'
 
 
 def test_selftest():
