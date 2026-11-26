@@ -73,6 +73,7 @@ packages = [
     "robot_toolkit.teleop",
     "robot_toolkit.agent",
     "robot_toolkit.agent_rpc",
+    "robot_toolkit.tasks",
 ]
 
 [tool.setuptools.package-data]

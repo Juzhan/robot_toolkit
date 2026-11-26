@@ -8,6 +8,9 @@ import numpy as np
 import pytest
 
 import robot_toolkit.task_runner as task_runner
+from robot_toolkit.tasks import constants as task_constants
+from robot_toolkit.tasks import session as task_session
+from robot_toolkit.tasks import teach as task_teach
 from robot_toolkit.task_runner import (dataset_root, execute,
                                        load_task_config, lerobot_root,
                                        trajectory_root)
@@ -83,7 +86,7 @@ def test_teach_mode_saves_a_trajectory(monkeypatch, tmp_path):
                   np.full(samples, -0.5), np.zeros(samples),
                   np.full(samples, 0.5), np.zeros(samples)], axis=1)
     trajectory = Trajectory(t=t, q=q, grip=np.full(samples, 0.06))
-    monkeypatch.setattr(task_runner, 'keyboard_teach',
+    monkeypatch.setattr(task_teach, 'keyboard_teach',
                         lambda *args, **kwargs: trajectory)
 
     assert execute(config, mode='teach', name='unit_teach', mock=True) == 0
@@ -168,8 +171,8 @@ def test_session_loops_teach_then_replay_collect(monkeypatch, tmp_path):
         fake_hub.events._events.extend([('x', 0.1), ('x', 0.2)])
         return trajectory
 
-    monkeypatch.setattr(task_runner, 'joycon_teach', fake_teach)
-    monkeypatch.setattr(task_runner, 'ButtonHub', lambda: fake_hub)
+    monkeypatch.setattr(task_session, 'joycon_teach', fake_teach)
+    monkeypatch.setattr(task_session, 'ButtonHub', lambda: fake_hub)
 
     assert task_runner.run_session(config, mock=True) == 0
     assert fake_hub.stopped
@@ -237,7 +240,7 @@ def test_master_slave_mode_samples_from_config(tmp_path):
 
 def test_repo_ships_demo_config(tmp_path, monkeypatch):
     # A fresh clone has no workspace configs; the packaged demo must still load.
-    monkeypatch.setattr(task_runner, 'ROOT', tmp_path)
+    monkeypatch.setattr(task_constants, 'ROOT', tmp_path)
     task = load_task_config('piper_master_slave')
     assert task.mode == 'master_slave'
     assert task.robot['options']['configure_on_connect'] is False
