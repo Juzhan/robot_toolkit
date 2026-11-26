@@ -99,8 +99,11 @@ robot_toolkit/
 │   ├── recorder.py           # 异步 episode 录制（帧落盘 + 后台导出）
 │   ├── session.py            # 机器人/夹爪/相机 -> episode 采集会话
 │   ├── passive.py            # 被动采样循环（只读，供主从示教/配置驱动复用）
+│   ├── hand_demo.py          # 仅视频的人手演示采集（预留手部跟踪接口）
+│   ├── speech.py             # 语音播报（移植自 ur5e_real_collect，蓝牙保持流/预抢占）
+│   ├── audio.py              # 提示音与唤醒音
 │   ├── observation.py        # CameraFrame -> images/depth
-│   └── export.py             # LeRobot 导出 + 无依赖 manifest 导出
+│   └── export.py             # LeRobot / manifest / 视频数据集导出
 ├── calibrate/
 │   ├── intrinsics.py         # 纯 NumPy Zhang 标定（可选 OpenCV 精修）
 │   ├── handeye.py            # 纯 NumPy Park-Martin AX=XB
@@ -124,9 +127,9 @@ robot_toolkit/
 └── tests/                    # 纯 NumPy 测试
 ```
 
-任务配置放在工作区的 `configs/tasks/*.json`（与 `run.bat` 同级或 `parents[2]`
-能找到的位置）；`task_runner` 会按 `ROBOT_TASK_CONFIG_DIR` → 工作区 `configs/tasks`
-→ `outputs/robot_tasks/<name>/task.json` 的顺序查找。
+任务配置放在本项目的 `robot_toolkit/configs/tasks/*.json`；`task_runner` 会按
+`ROBOT_TASK_CONFIG_DIR` → 项目 `configs/tasks` → 工作区 `configs/tasks` →
+`outputs/robot_tasks/<name>/task.json` 的顺序查找。
 
 ---
 
@@ -206,17 +209,18 @@ pip install -e .
 
 真机任务都由 `configs/tasks/<name>.json` 描述（机器人、夹爪、相机、采集参数都在
 profile 里），`run.bat` 是 Windows 的薄封装，`run.py` 是跨平台等价入口。
-仓库自带四个可直接改的 demo 配置：
+仓库自带五个可直接改的 demo 配置：
 
 | 配置 | 机器人 | 模式 |
 |---|---|---|
+| `hand_demo` | 无机器人（仅相机，录人手演示） | `hand_demo` |
 | `piper_master_slave` | Piper X（主从示教，只读采样） | `master_slave` |
 | `piper_calibrate` | Piper X + 腕部相机（手动摆位标定） | `calibrate` |
 | `piper_calibrate_auto` | Piper X 单臂（自动扫描标定，需 `--yes`） | `calibrate` |
 | `ur5e_session` | UR5e + Robotiq（Joy-Con 常驻会话） | `session` |
 
-查找顺序：工作区 `configs/tasks`（本地覆盖）→ 仓库 `robot_toolkit/configs/tasks`
-（demo）→ `outputs/robot_tasks/<name>/task.json`；`ROBOT_TASK_CONFIG_DIR` 可整体覆盖。
+查找顺序：项目 `robot_toolkit/configs/tasks` → 工作区 `configs/tasks`
+（兼容旧配置）→ `outputs/robot_tasks/<name>/task.json`；`ROBOT_TASK_CONFIG_DIR` 可整体覆盖。
 `ur5e_session` 里的 `robot.options.ip` 和相机 `serial` 需要在现场按实际设备填。
 
 相机 `kind` 按**相机型号**选，和机器人无关：
@@ -273,7 +277,60 @@ run.bat piper_master_slave --mock --sample-seconds 5      # 离线跑通链路
 之后并不删除（保留是为了以后能重导）。10 s / 30 Hz / 640×480 RGB+深度 的一条大约 460 MB，
 长条建议关掉相机 `depth` 或打开 `collect.compress`。
 
-### 5.2 标定（棋盘格）
+### 5.2 人手演示采集（仅视频）
+
+有些演示只需要录下人的操作过程，不需要机械臂状态和动作。`hand_demo` 模式复用同一套
+任务配置、按键录制、take 落盘和导出流程，只是数据集里**只有视频**：
+
+```powershell
+run.bat hand_demo                              # 启动后按空格开始；空格保存，再按开始下一条
+run.bat hand_demo --input joycon               # 用 Joy-Con：B 开始，A 保存，- 退出
+run.bat hand_demo hand_demo --dry-run          # 不接硬件，只看解析结果
+run.bat hand_demo --mock --sample-seconds 5    # 离线跑通链路
+```
+
+按键：空格结束并保存（再按开始下一条），`x` 丢弃当前片段，`d` 删除最后一条
+（按两次确认），`q` 退出。
+语音播报默认开启（开始录制 / 第 N 条已保存 / 已丢弃 / 已删除 / 采集结束），临时关闭用
+`run.bat hand_demo --no-voice`。播报实现与旧项目一致：Windows 使用 SAPI
+（`comtypes`，并带蓝牙音频保持流），macOS 使用系统 `say -v Tingting`；
+Linux 没有语音引擎时回退为提示音。
+想沿用 Joy-Con 连续录很多条时，把 `hand_demo.input` 设为 `joycon`：按键与 `session`
+模式一致——B 开始、A 结束保存、Y 取消当前（按两次）、加号键删除最后一条
+（按两次确认）、Home 查看状态、`-` 退出；X/R 在仅视频模式没有对应动作，
+不会执行任何操作。
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `collect.cameras` | — | 复用相机配置；可配一个或多个视角 |
+| `hand_demo.fps` | `0` | `0` = 使用 `collect.fps`；只有需要单独给人手演示设帧率时才填正数 |
+| `hand_demo.auto_record` | `false` | 启动后等 B/空格开始；设 `true` 才启动即录 |
+| `hand_demo.sample_seconds` | `0` | `>0` 时到点自动结束 |
+| `collect.max_frames` | `0` | 单条片段帧数上限；达到后保存并结束会话 |
+| `collect.record_state_action` | `true` | `false` 只记录相机，不写 `observation.state`/`action`（`hand_demo` 必须为 `false`） |
+| `collect.export` | `lerobot` | 与机械臂采集相同：`lerobot` 或 `manifest` |
+| `hand_demo.input` | `keyboard` | `keyboard` 或 `joycon` |
+| `hand_demo.voice` | `true` | 开始/保存/丢弃时语音播报（复用旧项目的 `speech.py`）；`--no-voice` 可临时关闭 |
+| `hand_demo.tracker` | `""` | 预留：手部跟踪通道名；目前只提示，跟踪结果会写成 spool 的 `tracker_*` 附加字段 |
+
+输出是标准 **LeRobot v3** 数据集，与机械臂采集同构；因为
+`collect.record_state_action=false`，features 里只有相机：
+
+```text
+<root>/<slug>/dataset/<会话>/
+├── take_<id>/*.npz              # 原始 spool 帧（保留，可重导）
+└── dataset/                     # LeRobot 数据集
+    ├── data/chunk-000/file-000.parquet
+    ├── videos/observation.images.front/chunk-000/file-000.mp4
+    ├── meta/info.json           # features 只有 observation.images.front
+    ├── meta/tasks.parquet
+    └── meta/capture_contract.json
+```
+
+手部跟踪的预留扩展点是 `collect.hand_demo.HandTracker.read(timestamp, images)`：
+返回的 dict 会作为 `tracker_*` 字段写入 spool 帧，默认不启用。
+
+### 5.3 标定（棋盘格）
 
 标定同样是配置驱动（`mode: "calibrate"`），采集和求解都在一个循环里：
 
@@ -408,7 +465,7 @@ python -m robot_toolkit.examples.calibration_regression /path/ur5_calib_package_
 需要 LeRobot 导出时，把上面任一项指向装了 `lerobot` 的环境；否则把任务 JSON 的
 `collect.export` 改成 `manifest`。
 
-### 5.3 诊断与单模块命令
+### 5.4 诊断与单模块命令
 
 ```powershell
 # 不接硬件，验证核心数学、接口和录制链路
@@ -669,6 +726,30 @@ python -m robot_toolkit.examples.piper_collect --source teleop --cameras-json ca
   已适配 LeRobot 0.4（`vcodec=`）与 0.6（`resume()`、`use_videos=`）两代 API；
 * 没装 LeRobot 时用 `export_manifest`，生成 `episodes.jsonl` + `schema.json`。
 
+人手演示（仅视频）也走同一个 `DatasetSchema` / `EpisodeCollector`，只是把
+`include_state_action` 关掉；导出的仍是标准 LeRobot 数据集：
+
+```python
+from robot_toolkit.collect import (CameraSpec, DatasetSchema,
+                                   export_lerobot, record_hand_demos)
+from robot_toolkit.core.conventions import RobotSpec
+
+schema = DatasetSchema.for_robot(
+    RobotSpec(name='hand_demo', joint_names=(), gripper=None),
+    cameras=(CameraSpec('front', 640, 480),), fps=30,
+    repo_id='local/hand_demo', include_state_action=False)
+
+stats = record_hand_demos(
+    (front_camera,), 'outputs/hand_dataset', schema, fps=30,
+    task='pick the cube by hand', auto_record=True, export=export_lerobot,
+)
+# stats['saved'] / stats['frames'] / stats['dataset_root']
+```
+
+需要自己控制开始/结束时用 `EpisodeCollector`：`start()`、`capture_frame()`、
+`stop()`、`discard()`；`capture_frame()` 只抓相机帧，`stop()` 后由同一个
+`export_lerobot` 写入 `data/`、`videos/`、`meta/`。
+
 ### 6.6 标定
 
 ```python
@@ -804,6 +885,7 @@ Piper：`RobotSpec.piper_x()` 已经提供关节/夹爪命名；真机按上面�
 | UR 真机 | — | `ur_rtde` |
 | RealSense | — | `pyrealsense2` |
 | USB 相机 / 棋盘格检测 | — | `opencv-python` |
+| 语音播报 | — | Windows：`comtypes`（SAPI）+ 蓝牙保持流；macOS：系统 `say`；Linux：提示音回退 |
 | LeRobot 导出 | — | `lerobot>=0.4.3` |
 | Robotiq Modbus | — | `pymodbus` |
 

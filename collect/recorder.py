@@ -145,7 +145,7 @@ class EpisodeRecorder:
             write_json(self.take / 'take.json', metadata)
             return self.take
 
-    def capture(self, observation_state, action, images=None, depth=None,
+    def capture(self, observation_state=None, action=None, images=None, depth=None,
                 extra=None, timestamp: float | None = None, image_ids=None) -> bool:
         """Queue one row. ``image_ids`` (``{camera: frame identity}``) lets repeated
         camera frames be stored once and referenced (see the module docstring)."""
@@ -160,16 +160,19 @@ class EpisodeRecorder:
                 self.error = 'write queue is full; episode stopped'
                 self.phase = 'error'
                 return False
-            state = np.asarray(observation_state, dtype=np.float32).reshape(-1)
-            action_array = np.asarray(action, dtype=np.float32).reshape(-1)
-            if state.size != self.schema.dim or action_array.size != self.schema.dim:
-                raise DatasetError(f'state/action must have {self.schema.dim} values')
             sample = {
-                'observation_state': state,
-                'action': action_array,
                 'timestamp': np.array([float(timestamp if timestamp is not None
                                              else self.clock())], dtype=np.float64),
             }
+            if self.schema.include_state_action:
+                if observation_state is None or action is None:
+                    raise DatasetError('state/action are required by this schema')
+                state = np.asarray(observation_state, dtype=np.float32).reshape(-1)
+                action_array = np.asarray(action, dtype=np.float32).reshape(-1)
+                if state.size != self.schema.dim or action_array.size != self.schema.dim:
+                    raise DatasetError(f'state/action must have {self.schema.dim} values')
+                sample['observation_state'] = state
+                sample['action'] = action_array
             if self.schema.require_images:
                 missing = [camera.name for camera in self.schema.cameras
                            if images is None or images.get(camera.name) is None]

@@ -9,6 +9,7 @@ drives Piper X, UR5e, MuJoCo or mock because it only uses
     run.bat stack_the_cube teach
     run.bat stack_the_cube collect --yes
     run.bat stack_the_cube --dry-run
+    run.bat hand_demo                      # video-only human demonstrations
 
 The default config directory is ``configs/tasks``.  A path passed as the first
 argument is used directly when it points to an existing ``.json`` file.
@@ -27,11 +28,14 @@ from pathlib import Path
 
 from .collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
                       exporter_for)
+from .collect.hand_demo import record_hand_demos
 from .collect.passive import sample_episodes
 from .calibrate.options import CalibrateOptions
 from .agent.options import AgentOptions
+from .collect.speech import speak
 from .config import build_dataclass
-from .errors import DatasetError
+from .core.conventions import RobotSpec
+from .errors import CalibrationError, DatasetError
 from .profiles import build_camera_hub, build_gripper, build_robot
 from .core.safety_envelope import SafetyEnvelope
 from .teach import (Replayer, joycon_teach, joint_motion, keyboard_teach,
@@ -46,7 +50,7 @@ ROOT = (Path(__file__).resolve().parents[2]
         else _PACKAGE_ROOT)
 DEFAULT_ROOT = 'outputs/robot_tasks'
 MODES = ('teach', 'replay', 'collect', 'teach_collect', 'export', 'session',
-         'master_slave', 'calibrate', 'safety', 'agent')
+         'master_slave', 'hand_demo', 'calibrate', 'safety', 'agent')
 
 
 @dataclass
@@ -99,6 +103,9 @@ class CollectOptions:
     lerobot_root: str = ''
     # Export in a low-priority child process so encoding cannot stall or crash capture.
     isolated_export: bool = True
+    # Record robot state/action alongside cameras.  False records cameras only
+    # (human demonstrations) using the same spool/LeRobot export pipeline.
+    record_state_action: bool = True
 
 
 @dataclass
@@ -137,6 +144,78 @@ class MasterSlaveOptions:
 
 
 @dataclass
+class HandDemoOptions:
+    """Video-only human demonstration recording.
+
+    No robot state or action is written: an episode is one video per camera,
+    plus per-frame timestamps.  The robot / gripper profiles are unused in this
+    mode; cameras come from ``collect.cameras``.  ``tracker`` is reserved for a
+    future hand-pose channel and stays empty today.
+    """
+
+    # 0 means "use collect.fps"; set a positive value only for a
+    # hand-demo-specific override.
+    fps: float = 0.0
+    # Like session mode: wait for B/space instead of recording on startup.
+    auto_record: bool = False
+    sample_seconds: float = 0.0
+    tracker: str = ''
+    # 'keyboard' or 'joycon'; Joy-Con maps B/A to start/save.
+    input: str = 'keyboard'
+    # Reuse collect.speech (ported from ur5e_real_collect) for clip feedback.
+    voice: bool = True
+
+
+@dataclass
+class CalibrateOptions:
+    """Board-based calibration driven from the task file.
+
+    ``kind``: ``handeye`` (robot/board pose pairs), ``intrinsics`` (board views
+    only) or ``both``.  Hand-eye needs the robot's TCP; intrinsics only needs
+    the camera, but the robot profile is still used when present.
+    """
+
+    kind: str = 'handeye'
+    eye: str = 'eye_in_hand'
+    camera: str = ''
+    # ``chessboard``: ``pattern`` = inner corners.  ``charuco``: ``squares`` =
+    # squares per side of the board in assets/board_charuco_300dpi.pdf.
+    board: str = 'chessboard'
+    pattern: list = field(default_factory=lambda: [9, 6])
+    squares: list = field(default_factory=lambda: [7, 10])
+    aruco_dict: str = 'DICT_5X5_100'
+    marker_size: float = 0.0
+    min_corners: int = 6
+    square_size: float = 0.025
+    min_samples: int = 8
+    path: str = ''
+    apply: bool = False
+    # Automated scanning: the host drives the arm through the pose list, checks
+    # the board at every stop and solves at the end.  Only for a single,
+    # host-controlled arm (not for a hardware-linked leader/follower pair) and
+    # requires --yes because it moves the robot.
+    auto: bool = False
+    poses: list = field(default_factory=list)
+    pose_count: int = 10
+    pose_delta_rad: float = 0.25
+    pose_seed: int = 0
+    settle_s: float = 0.8
+    speed_scale: float = 0.3
+    safety_path: str = ''
+    require_safety_envelope: bool = True
+    require_initial_board: bool = True
+    path_clearance_m: float = 0.01
+    quality_protocol: bool = False
+    action: str = 'solve'
+    frames_per_pose: int = 6
+    verify_samples: int = 8
+    verify_after: bool = False
+    solution_path: str = ''
+    intrinsics_mode: str = 'auto'
+    pose_plan_path: str = ''
+
+
+@dataclass
 class SafetyOptions:
     """Human-guided safety envelope capture for any RobotBackend."""
 
@@ -166,6 +245,7 @@ class TaskConfig:
     collect: CollectOptions = field(default_factory=CollectOptions)
     session: SessionOptions = field(default_factory=SessionOptions)
     master_slave: MasterSlaveOptions = field(default_factory=MasterSlaveOptions)
+    hand_demo: HandDemoOptions = field(default_factory=HandDemoOptions)
     calibrate: CalibrateOptions = field(default_factory=CalibrateOptions)
     safety: SafetyOptions = field(default_factory=SafetyOptions)
     agent: AgentOptions = field(default_factory=AgentOptions)
@@ -192,10 +272,10 @@ def config_dirs() -> list[Path]:
     override = os.environ.get('ROBOT_TASK_CONFIG_DIR')
     if override:
         return [Path(override)]
-    # Demo configs ship next to the package code, so a fresh clone can run
-    # ``run.bat piper_master_slave`` without copying anything.
+    # Project configs are authoritative; workspace-level configs stay as a
+    # fallback for older tasks that have not been moved into this package.
     code_root = Path(__file__).resolve().parent
-    dirs = [ROOT / 'configs' / 'tasks', code_root / 'configs' / 'tasks']
+    dirs = [code_root / 'configs' / 'tasks', ROOT / 'configs' / 'tasks']
     unique = []
     for path in dirs:
         if path not in unique:
@@ -298,6 +378,15 @@ def load_task_config(name_or_path: str) -> TaskConfig:
         raise ValueError(f'{path}: collect.fps 必须大于 0')
     if not isinstance(task.collect.compress, bool):
         raise ValueError(f'{path}: collect.compress 必须是 true 或 false')
+    if float(task.hand_demo.fps) < 0:
+        raise ValueError(f'{path}: hand_demo.fps 不能为负（0 = 使用 collect.fps）')
+    if not isinstance(task.collect.record_state_action, bool):
+        raise ValueError(f'{path}: collect.record_state_action 必须是 true 或 false')
+    if task.mode == 'hand_demo' and task.collect.record_state_action:
+        raise ValueError(f'{path}: hand_demo 需要 collect.record_state_action=false')
+    if str(task.hand_demo.input).strip().lower() not in ('keyboard', 'joycon'):
+        raise ValueError(f'{path}: hand_demo.input 只能是 keyboard 或 joycon')
+    task.hand_demo.input = str(task.hand_demo.input).strip().lower()
     if float(task.teach.rate) <= 0 or float(task.replay.rate) <= 0:
         raise ValueError(f'{path}: teach.rate / replay.rate 必须大于 0')
     return task
@@ -581,6 +670,25 @@ def run_export(task: TaskConfig, name: str) -> int:
             pass
 
 
+def _camera_entries(task: TaskConfig, mock: bool) -> list[dict]:
+    """Camera entries from ``collect.cameras``; ``--mock`` swaps in MockCamera."""
+    entries = list(task.collect.cameras)
+    if mock:
+        entries = [{
+            'kind': 'mock', 'name': entry.get('name', 'camera'),
+            'width': int(entry.get('width', 640)),
+            'height': int(entry.get('height', 480)),
+            'fps': int(entry.get('fps', 30)),
+            'depth': bool(entry.get('depth', False)),
+        } for entry in entries]
+    return entries
+
+
+def _build_cameras(task: TaskConfig, mock: bool = False) -> list:
+    entries = _camera_entries(task, mock)
+    return list(build_camera_hub(entries)) if entries else []
+
+
 def _build_runtime(task: TaskConfig, mock: bool, with_cameras: bool = True):
     """Build whatever backend/gripper the task profile names."""
     gripper_cfg = dict(task.gripper)
@@ -609,18 +717,7 @@ def _build_runtime(task: TaskConfig, mock: bool, with_cameras: bool = True):
             gripper_options['backend'] = 'mock'
         gripper = build_gripper(gripper_kind, robot=robot, options=gripper_options)
 
-    cameras = []
-    if with_cameras and task.collect.cameras:
-        entries = task.collect.cameras
-        if mock:
-            entries = [{
-                'kind': 'mock', 'name': entry.get('name', 'camera'),
-                'width': int(entry.get('width', 640)),
-                'height': int(entry.get('height', 480)),
-                'fps': int(entry.get('fps', 30)),
-                'depth': bool(entry.get('depth', False)),
-            } for entry in entries]
-        cameras = list(build_camera_hub(entries))
+    cameras = _build_cameras(task, mock) if with_cameras else []
     return robot, gripper, cameras
 
 
@@ -1022,6 +1119,118 @@ def run_master_slave(task: TaskConfig, mock: bool = False,
     return 0 if stats['saved'] else 1
 
 
+class _JoyConKeys:
+    """Adapt Joy-Con buttons to hand-demo keys, matching session semantics.
+
+    In ``session`` mode B starts and A saves; here B is ignored while recording
+    and A is ignored while idle, so a single button never changes meaning.  Y
+    cancels the current clip and Plus deletes the newest episode, like session
+    mode.  X and R have no counterpart in a vision-only session and are ignored.
+    Home reports status; Minus exits (unused in session mode).
+    """
+
+    def __init__(self, hub):
+        self.hub = hub
+        self.active = False
+
+    def sync(self, active: bool) -> None:
+        self.active = bool(active)
+
+    def get(self):
+        try:
+            button, _stamp = self.hub.events.get_nowait()
+        except queue.Empty:
+            return None
+        if button == 'b':
+            return None if self.active else ' '
+        if button == 'a':
+            return ' ' if self.active else None
+        if button == 'y':
+            return 'cancel'
+        if button == 'plus':
+            return 'delete'
+        if button == 'home':
+            return 'status'
+        if button == 'minus':
+            return 'q'
+        return None
+
+
+def run_hand_demo(task: TaskConfig, mock: bool = False,
+                  dataset_override: str = '') -> int:
+    """Record camera-only human demonstrations; no robot is built or moved.
+
+    The flow and dataset format match robot collection (same EpisodeCollector,
+    same LeRobot export), with ``collect.record_state_action=false`` switching
+    off the state/action modality.  ``hand_demo.input`` selects keyboard or
+    Joy-Con; both can record any number of consecutive clips.
+    """
+    if not task.collect.cameras:
+        print('hand_demo 需要至少一个相机：请在 collect.cameras 里配置')
+        return 2
+    cameras = _build_cameras(task, mock)
+    if not cameras:
+        print('hand_demo 没有可用的相机')
+        return 2
+    fps = float(task.hand_demo.fps or task.collect.fps or 30.0)
+    root = dataset_root(task, dataset_override)
+    tracker_name = str(task.hand_demo.tracker or '').strip()
+    input_kind = str(task.hand_demo.input or 'keyboard').strip().lower()
+    spec = RobotSpec(name='hand_demo', joint_names=(), gripper=None)
+    camera_specs = tuple(CameraSpec.from_camera(camera) for camera in cameras)
+    schema = DatasetSchema.for_robot(
+        spec, cameras=camera_specs, fps=int(round(fps)),
+        repo_id=task.collect.repo_id or f'local/{task.slug}',
+        name_style=task.collect.feature_names,
+        include_state_action=False)
+    print(f'人手演示采集（仅视频）：{task.task}  fps={fps:g}  '
+          f'相机={[camera.name for camera in cameras]}  '
+          f'输入={input_kind}  语音={"开" if task.hand_demo.voice else "关"}  '
+          f'导出={task.collect.export}  ->  {root}')
+    if tracker_name:
+        print(f'hand_demo.tracker={tracker_name!r}：手部跟踪接口已预留但尚未实现，'
+              '本次只录视频。')
+    hub = None
+    keys = None
+    if input_kind == 'joycon':
+        hub = ButtonHub()
+        hub.start()
+        keys = _JoyConKeys(hub)
+        print('Joy-Con：B=开始，A=结束保存，Y=取消当前（按两次），'
+              '+=删除上一条（按两次），Home=状态，-=退出（X/R 无操作）', flush=True)
+    else:
+        print('键盘：空格=结束并保存（再按开始下一条），x=丢弃当前，'
+              'd=删除上一条（按两次），q=退出', flush=True)
+    announce = None
+    if task.hand_demo.voice:
+        intro = ('就绪：B 开始录制，A 结束保存，Y 取消当前，'
+                 '加号键删除上一条，Home 检查状态，减号键退出'
+                 if input_kind == 'joycon' else
+                 '就绪：空格开始或结束保存，X 丢弃，D 删除上一条，Q 退出')
+        # Old session announces the control map when it becomes idle, not when
+        # the first recording starts.
+        speak(intro)
+        announce = speak
+    try:
+        stats = record_hand_demos(
+            cameras, root, schema, fps=fps, task=task.task,
+            auto_record=bool(task.hand_demo.auto_record),
+            sample_seconds=float(task.hand_demo.sample_seconds),
+            max_frames=int(task.collect.max_frames or 0),
+            export=exporter_for(task.collect.export),
+            tracker=None, keys=keys, announce=announce,
+        )
+    finally:
+        if hub is not None:
+            hub.stop()
+    print(f'采集结束：episodes={stats["episodes"]} frames={stats["frames"]} '
+          f'rate={stats.get("rate", 0.0):.1f} Hz saved={stats["saved"]} '
+          f'skipped={stats["skipped"]} root={stats["dataset_root"]}')
+    for error in stats.get('export_errors') or ():
+        print(f'导出失败：{error}')
+    return 0 if stats['saved'] else 1
+
+
 def _run_calibrate_auto(robot, camera, session, cfg: CalibrateOptions,
                         path, need: int, yes: bool) -> int:
     """Task-level gate (confirmation, safety envelope) around calibrate.auto."""
@@ -1352,22 +1561,24 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
     print(f'配置文件：{task.source_path}')
     print(f'任务：{task.task}  (slug={task.slug})')
     print(f'模式：{mode}')
-    print(f'机器人：{task.robot.get("kind")}'
-          f'  name={task.robot.get("name", "")}'
-          f'  max_joint_speed={_robot_speed(task.robot)} rad/s')
-    print(f'夹爪：{task.gripper.get("kind", "")}')
-    print(f'轨迹目录：{root}')
-    print(f'轨迹名称：{name or "(自动生成/使用最新)"}')
+    if mode != 'hand_demo':
+        print(f'机器人：{task.robot.get("kind")}'
+              f'  name={task.robot.get("name", "")}'
+              f'  max_joint_speed={_robot_speed(task.robot)} rad/s')
+        print(f'夹爪：{task.gripper.get("kind", "")}')
+        print(f'轨迹目录：{root}')
+        print(f'轨迹名称：{name or "(自动生成/使用最新)"}')
     print(f'数据集根目录：{dataset_root(task, dataset_override)}')
     print(f'LeRobot 数据集（跨会话追加）：{lerobot_root(task)}  '
           f'导出：{"独立子进程" if task.collect.isolated_export else "采集进程内"}')
     print(f'相机：{len(task.collect.cameras)} 个'
           + (f" ({', '.join(str(item.get('name', 'camera')) for item in task.collect.cameras)})"
              if task.collect.cameras else '（仅关节/夹爪）'))
-    print(f'示教：{task.teach.rate} Hz，最长 {task.teach.max_duration} s')
-    print(f'回放：speed_scale={task.replay.speed_scale}，'
-          f'smoothing={task.replay.smoothing}，'
-          f'continuous={task.replay.continuous}')
+    if mode != 'hand_demo':
+        print(f'示教：{task.teach.rate} Hz，最长 {task.teach.max_duration} s')
+        print(f'回放：speed_scale={task.replay.speed_scale}，'
+              f'smoothing={task.replay.smoothing}，'
+              f'continuous={task.replay.continuous}')
     if mode == 'session':
         print(f'Joy-Con 会话：prefix={task.session.prefix or task.slug}，'
               f'X 确认={task.session.confirm_replay}，'
@@ -1386,6 +1597,26 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
         else:
             print(f'主从采样：fps={task.master_slave.fps:g}，{start}，{duration}，{cap}')
             print('按键：空格 结束并保存（再按开始下一条），x 丢弃当前，q 退出')
+        print(f'主从采样：fps={task.master_slave.fps:g}，{start}，{duration}，{cap}')
+        print('按键：空格 结束并保存（再按开始下一条），x 丢弃当前，q 退出')
+    if mode == 'hand_demo':
+        duration = ('不限时长' if task.hand_demo.sample_seconds <= 0
+                    else f'{task.hand_demo.sample_seconds:g} s 后自动结束')
+        cap = ('单条不限帧数' if not task.collect.max_frames
+               else f'单条上限 {task.collect.max_frames} 帧')
+        start = '启动即录' if task.hand_demo.auto_record else '按键开始'
+        fps = float(task.hand_demo.fps or task.collect.fps or 30.0)
+        print(f'人手演示（仅视频）：fps={fps:g}，{start}，'
+              f'{duration}，{cap}，导出={task.collect.export}，'
+              f'输入={task.hand_demo.input}，'
+              f'语音={"开" if task.hand_demo.voice else "关"}')
+        if task.hand_demo.tracker:
+            print(f'手部跟踪接口已预留但尚未实现：{task.hand_demo.tracker!r}')
+        if task.hand_demo.input == 'joycon':
+            print('Joy-Con：B 开始，A 结束保存，Y 取消当前，+ 删除上一条，'
+                  'Home 状态，- 退出（X/R 无操作）')
+        else:
+            print('按键：空格 结束并保存，x 丢弃当前，d 删除上一条（两次），q 退出')
     if mode == 'calibrate':
         cfg = task.calibrate
         target = Path(cfg.path) if cfg.path else task_dir(task) / 'calibration.json'
@@ -1485,15 +1716,23 @@ def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             speed_scale: float | None = None,
             dataset_override: str = '', dry_run: bool = False,
             auto_record: bool | None = None,
-            sample_seconds: float | None = None) -> int:
+            sample_seconds: float | None = None,
+            input_kind: str | None = None,
+            voice: bool | None = None) -> int:
     mode = (mode or task.mode).strip().lower()
     if mode not in MODES:
         print(f'未知模式 {mode!r}，可选：{", ".join(MODES)}')
         return 2
+    if input_kind is not None:
+        task.hand_demo.input = str(input_kind).strip().lower()
+    if voice is not None:
+        task.hand_demo.voice = bool(voice)
     if auto_record is not None:
         task.master_slave.auto_record = bool(auto_record)
+        task.hand_demo.auto_record = bool(auto_record)
     if sample_seconds is not None:
         task.master_slave.sample_seconds = float(sample_seconds)
+        task.hand_demo.sample_seconds = float(sample_seconds)
     if mode == 'session':
         if speed_scale is not None:
             task.session.replay_speed_scale = float(speed_scale)
@@ -1506,6 +1745,11 @@ def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             print_plan(task, mode, None, dataset_override)
             return 0
         return run_master_slave(task, mock=mock, dataset_override=dataset_override)
+    if mode == 'hand_demo':
+        if dry_run:
+            print_plan(task, mode, None, dataset_override)
+            return 0
+        return run_hand_demo(task, mock=mock, dataset_override=dataset_override)
     if mode == 'calibrate':
         if dry_run:
             print_plan(task, mode, None, dataset_override)
@@ -1579,9 +1823,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--yes', action='store_true', help='跳过回放安全确认')
     parser.add_argument('--mock', action='store_true', help='离线 mock，不接硬件')
     parser.add_argument('--auto-record', action='store_true',
-                        help='master_slave：启动即开始录制，不等按键')
+                        help='master_slave / hand_demo：启动即开始录制，不等按键')
     parser.add_argument('--sample-seconds', type=float, default=None,
-                        help='master_slave：采样时长（0 = 一直采到按 q）')
+                        help='master_slave / hand_demo：采样时长（0 = 一直采到按 q）')
+    parser.add_argument('--input', choices=['keyboard', 'joycon'], default=None,
+                        help='hand_demo：采集按键来源（默认用配置文件里的值）')
+    parser.add_argument('--voice', action=argparse.BooleanOptionalAction, default=None,
+                        help='hand_demo：开始/保存/丢弃时语音播报（--no-voice 关闭）')
     parser.add_argument('--dry-run', action='store_true', help='只打印解析后的计划，不动机器人')
     parser.add_argument('--verify-solution', help='标定任务：用指定 solution.json 采集独立验证位姿')
     parser.add_argument('--pose-plan', help='按固定的标定/验证姿态清单采样，不重新随机生成')
@@ -1622,7 +1870,8 @@ def main(argv=None) -> int:
                        yes=args.yes, force=args.force, speed_scale=args.speed_scale,
                        dataset_override=args.dataset_root, dry_run=args.dry_run,
                        auto_record=args.auto_record or None,
-                       sample_seconds=args.sample_seconds)
+                       sample_seconds=args.sample_seconds,
+                       input_kind=args.input, voice=args.voice)
     except Exception as exc:
         print(f'任务执行失败：{type(exc).__name__}: {exc}')
         return 1

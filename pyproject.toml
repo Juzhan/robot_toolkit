@@ -33,6 +33,7 @@ reconstruction = ["open3d>=0.19,<0.20"]
 control = ["ruckig>=0.12"]
 # Joy-Con buttons/teleop; the joyconrobotics library itself is bundled in third_party.
 joycon = ["hidapi>=0.14", "PyGLM>=2.7", "scipy>=1.10"]
+voice = ["comtypes>=1.2 ; sys_platform == 'win32'"]
 # Optional host-side IK. PyRoki is not on PyPI; install it from source.
 ik = ["pyroki @ git+https://github.com/chungmin99/pyroki.git"]
 piper = [
@@ -61,5 +62,6 @@ packages = [
 [tool.setuptools.package-data]
 # Demo task configs ship with the package so `run.bat <demo>` works after install.
 robot_toolkit = ["configs/tasks/*.json", "configs/external_tools.json",
+                 "assets/audio/*.wav",
                  "third_party/joycon-robotics/joyconrobotics/*.py",
                  "third_party/joycon-robotics/LICENSE", "third_party/joycon-robotics/SOURCE.txt"]

@@ -1,0 +1,40 @@
+{
+  "slug": "push_box",
+  "task": "push box",
+  "mode": "hand_demo",
+  "root": "projects/robot_toolkit/outputs/robot_tasks",
+  "robot": {
+    "kind": "mock",
+    "name": "mock",
+    "safety": false
+  },
+  "gripper": {
+    "kind": "none"
+  },
+  "collect": {
+    "dataset_root": "",
+    "repo_id": "local/push_box",
+    "fps": 10.0,
+    "max_frames": 0,
+    "export": "lerobot",
+    "record_state_action": false,
+    "cameras": [
+      {
+        "kind": "realsense",
+        "name": "front",
+        "serial": "",
+        "width": 640,
+        "height": 480,
+        "fps": 30,
+        "depth": false
+      }
+    ]
+  },
+  "hand_demo": {
+    "auto_record": false,
+    "sample_seconds": 0.0,
+    "tracker": "",
+    "input": "joycon",
+    "voice": true
+  }
+}
