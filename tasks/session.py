@@ -1,37 +1,16 @@
 """Interactive teach/replay collection session."""
+
 from __future__ import annotations
-
-import argparse
-import json
-import os
 import queue
-import re
 import shutil
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
+from ..collect import CameraSpec, DatasetSchema, EpisodeCollector
+from ..teach import joycon_teach, joint_motion, save_trajectory, state_line
 from ..teleop import ButtonHub
-
 from .build import _exporter
 from .options import TaskConfig
 from .paths import lerobot_root, trajectory_root
-
-from .build import (_build_cameras, _build_replayer, _build_runtime,
-                        _delete_last_episode, _load_trajectory_checked,
-                        _open_gripper, _close_gripper)
-from .paths import (dataset_root, latest_trajectory, _next_session_name)
+from .build import _build_replayer, _build_runtime, _delete_last_episode, _load_trajectory_checked, _open_gripper, _close_gripper
+from .paths import dataset_root, latest_trajectory, _next_session_name
 
 
 def _run_session_episode(task: TaskConfig, robot, gripper, collector,
@@ -82,7 +61,6 @@ def _run_session_episode(task: TaskConfig, robot, gripper, collector,
         except Exception:
             pass
         return False
-
 
 def run_session(task: TaskConfig, mock: bool = False) -> int:
     """Persistent Joy-Con session: B teach, A save, X×2 replay+collect.
@@ -234,6 +212,5 @@ def run_session(task: TaskConfig, mock: bool = False) -> int:
                 robot.disconnect()
             except Exception:
                 pass
-
 
 # ------------------------------------------------------------------- dispatch

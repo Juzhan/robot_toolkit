@@ -1,34 +1,15 @@
 """Hardware-linked leader/follower sampling."""
+
 from __future__ import annotations
-
-import argparse
 import json
-import os
-import queue
-import re
-import shutil
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
+from ..collect import DatasetSchema, EpisodeCollector, exporter_for
 from ..collect.passive import sample_episodes
-from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
 from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
+from ..teach import state_line
 from .options import TaskConfig
 from .paths import lerobot_root
-
-from .build import (_build_cameras, _build_runtime, _delete_last_episode,
-                        _exporter, _robot_speed)
+from .build import _build_runtime, _delete_last_episode, _exporter
 from .paths import dataset_root
 
 
@@ -215,7 +196,6 @@ def _master_slave_session(task: TaskConfig, robot, cameras, schema, root, fps) -
             f'导出成功 {collector.saved} 条；数据集共 {episodes_in_dataset()} 条', '采集结束')
     return 0
 
-
 def run_master_slave(task: TaskConfig, mock: bool = False,
                      dataset_override: str = '') -> int:
     """Sample a leader/follower pair passively; nothing is commanded."""
@@ -261,5 +241,4 @@ def run_master_slave(task: TaskConfig, mock: bool = False,
     for error in stats.get('export_errors') or ():
         print(f'导出失败：{error}')
     return 0 if stats['saved'] else 1
-
 

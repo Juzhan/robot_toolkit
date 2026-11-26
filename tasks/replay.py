@@ -1,31 +1,7 @@
 """Trajectory replay mode."""
+
 from __future__ import annotations
-
-import argparse
-import json
-import os
-import queue
-import re
-import shutil
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
 from .options import TaskConfig
-
 from .build import (_build_replayer, _build_runtime, _confirm,
                         _load_trajectory_checked, _open_gripper, _close_gripper)
 
@@ -67,5 +43,4 @@ def run_replay(task: TaskConfig, name: str, mock: bool, yes: bool,
                 robot.disconnect()
             except Exception:
                 pass
-
 

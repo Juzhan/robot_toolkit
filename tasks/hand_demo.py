@@ -1,36 +1,15 @@
 """Vision-only human demonstration recording."""
+
 from __future__ import annotations
-
-import argparse
-import json
-import os
 import queue
-import re
-import shutil
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
+from ..collect import CameraSpec, DatasetSchema, exporter_for
 from ..teleop import ButtonHub
-
 from ..collect.hand_demo import record_hand_demos
 from ..collect.speech import speak
 from ..core.conventions import RobotSpec
 from .options import TaskConfig
-
-from .build import _build_cameras, _build_runtime
-from .paths import (dataset_root, _collect_name)
+from .build import _build_cameras
+from .paths import dataset_root
 
 
 class _JoyConKeys:
@@ -68,7 +47,6 @@ class _JoyConKeys:
         if button == 'minus':
             return 'q'
         return None
-
 
 def run_hand_demo(task: TaskConfig, mock: bool = False,
                   dataset_override: str = '') -> int:
@@ -143,5 +121,4 @@ def run_hand_demo(task: TaskConfig, mock: bool = False,
     for error in stats.get('export_errors') or ():
         print(f'导出失败：{error}')
     return 0 if stats['saved'] else 1
-
 

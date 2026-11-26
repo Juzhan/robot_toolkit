@@ -1,34 +1,14 @@
 """Safety envelope capture."""
+
 from __future__ import annotations
-
-import argparse
 import json
-import os
-import queue
-import re
-import shutil
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
 from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
+from ..teach import KeyReader
 from .options import TaskConfig
 from .paths import task_dir
-
-from .build import _build_runtime, _confirm
-from .paths import dataset_root
+from .build import _build_runtime
 
 
 def run_safety(task: TaskConfig, mock: bool = False) -> int:
@@ -95,5 +75,4 @@ def run_safety(task: TaskConfig, mock: bool = False) -> int:
             except Exception:
                 pass
         robot.disconnect()
-
 

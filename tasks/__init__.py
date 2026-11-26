@@ -17,7 +17,7 @@ from .master_slave import run_master_slave
 from .options import (CalibrateOptions, CollectOptions, HandDemoOptions,
                       MasterSlaveOptions, ReplayOptions, SafetyOptions,
                       SessionOptions, TaskConfig, TeachOptions)
-from .paths import (dataset_root, lerobot_root, task_dir, trajectory_root)
+from .paths import dataset_root, lerobot_root, task_dir, trajectory_root
 from .replay import run_replay
 from .safety import run_safety
 from .session import run_session

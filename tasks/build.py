@@ -1,32 +1,11 @@
 """Shared construction helpers for robots, grippers, cameras and runs."""
+
 from __future__ import annotations
-
-import argparse
-import json
-import os
-import queue
-import re
-import shutil
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
+from ..collect import exporter_for
 from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
+from ..teach import Replayer, joint_motion, load_trajectory
 from .options import TaskConfig
-from .paths import (dataset_root, trajectory_root,
-                     _next_name, _next_session_name)
+from .paths import trajectory_root
 
 
 def _exporter(task: TaskConfig):
@@ -35,7 +14,6 @@ def _exporter(task: TaskConfig):
     if task.collect.isolated_export and name == 'lerobot':
         return isolated_exporter(name)
     return exporter_for(name)
-
 
 def _delete_last_episode(task: TaskConfig, collector) -> str:
     """Remove the newest exported episode; refuses while exports are pending."""
@@ -50,12 +28,10 @@ def _delete_last_episode(task: TaskConfig, collector) -> str:
         return f'删除失败：{exc}'
     return f'已删除第 {result["deleted"] + 1} 条，数据集剩 {result["episodes"]} 条'
 
-
 def _robot_speed(profile: dict) -> float:
     options = profile.get('options', {}) or {}
     limits = profile.get('limits', {}) or {}
     return float(limits.get('max_velocity', options.get('max_joint_speed', 1.0)))
-
 
 def _build_replayer(task: TaskConfig, robot, gripper, capture_fps: float = 0.0):
     return Replayer(
@@ -71,7 +47,6 @@ def _build_replayer(task: TaskConfig, robot, gripper, capture_fps: float = 0.0):
         use_sdk_period=bool(task.replay.use_sdk_period),
     )
 
-
 def _open_gripper(gripper) -> None:
     if gripper is None:
         return
@@ -79,7 +54,6 @@ def _open_gripper(gripper) -> None:
     starter = getattr(gripper, 'start_polling', None)
     if callable(starter):
         starter()
-
 
 def _close_gripper(gripper) -> None:
     if gripper is None:
@@ -92,7 +66,6 @@ def _close_gripper(gripper) -> None:
         gripper.disconnect()
     except Exception:
         pass
-
 
 def _load_trajectory_checked(task: TaskConfig, name: str):
     """Load a trajectory and reject nearly-static recordings."""
@@ -109,7 +82,6 @@ def _load_trajectory_checked(task: TaskConfig, name: str):
         return None, 3
     return trajectory, 0
 
-
 def _confirm(yes: bool, message: str = '确认急停在手、工作区无人，开始回放？') -> bool:
     if yes:
         return True
@@ -118,7 +90,6 @@ def _confirm(yes: bool, message: str = '确认急停在手、工作区无人，�
     except EOFError:
         return False
     return answer in ('y', 'yes')
-
 
 def _camera_entries(task: TaskConfig, mock: bool) -> list[dict]:
     """Camera entries from ``collect.cameras``; ``--mock`` swaps in MockCamera."""
@@ -133,11 +104,9 @@ def _camera_entries(task: TaskConfig, mock: bool) -> list[dict]:
         } for entry in entries]
     return entries
 
-
 def _build_cameras(task: TaskConfig, mock: bool = False) -> list:
     entries = _camera_entries(task, mock)
     return list(build_camera_hub(entries)) if entries else []
-
 
 def _build_runtime(task: TaskConfig, mock: bool, with_cameras: bool = True):
     """Build whatever backend/gripper the task profile names."""
@@ -169,5 +138,4 @@ def _build_runtime(task: TaskConfig, mock: bool, with_cameras: bool = True):
 
     cameras = _build_cameras(task, mock) if with_cameras else []
     return robot, gripper, cameras
-
 

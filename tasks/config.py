@@ -1,35 +1,15 @@
 """Task config discovery and loading."""
-from __future__ import annotations
 
-import argparse
+from __future__ import annotations
 import json
 import os
-import queue
 import re
-import shutil
-import time
-from dataclasses import dataclass, field
 from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
 from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
 from .options import TaskConfig
-
-
-
 from . import constants
 from .constants import DEFAULT_ROOT, MODES, REPO_ROOT  # noqa: F401
+
 
 # Re-exported for importers; path lookups below read ``constants.ROOT`` so a
 # test or host can redirect the workspace root at runtime.
@@ -39,11 +19,9 @@ def _slug(text: str) -> str:
     value = re.sub(r'[^a-z0-9]+', '_', str(text or '').strip().lower()).strip('_')
     return value or 'default'
 
-
 def config_dir() -> Path:
     """Primary task-config directory (first entry of :func:`config_dirs`)."""
     return config_dirs()[0]
-
 
 def config_dirs() -> list[Path]:
     """Task-config search path, most specific first.
@@ -64,7 +42,6 @@ def config_dirs() -> list[Path]:
             unique.append(path)
     return unique
 
-
 def discover_configs() -> list[Path]:
     found: dict[str, Path] = {}
     for directory in config_dirs():
@@ -73,7 +50,6 @@ def discover_configs() -> list[Path]:
         for path in sorted(directory.glob('*.json')):
             found.setdefault(path.stem, path)
     return [found[key] for key in sorted(found)]
-
 
 def resolve_config_path(name: str) -> Path:
     direct = Path(name).expanduser()
@@ -95,7 +71,6 @@ def resolve_config_path(name: str) -> Path:
         f'找不到任务配置 {name!r}；可用任务：{available}。'
         f'搜索目录：{", ".join(str(path) for path in config_dirs())}')
 
-
 def _profile(value, what: str) -> dict:
     if isinstance(value, str):
         value = {'kind': value}
@@ -106,7 +81,6 @@ def _profile(value, what: str) -> dict:
         raise ValueError(f'{what}.kind 不能为空')
     profile['kind'] = str(profile['kind']).strip().lower()
     return profile
-
 
 def load_task_config(name_or_path: str) -> TaskConfig:
     path = resolve_config_path(name_or_path)
@@ -173,7 +147,6 @@ def load_task_config(name_or_path: str) -> TaskConfig:
         raise ValueError(f'{path}: teach.rate / replay.rate 必须大于 0')
     return task
 
-
 def print_configs() -> None:
     items = discover_configs()
     for directory in config_dirs():
@@ -189,6 +162,5 @@ def print_configs() -> None:
             continue
         print(f'  {path.stem:24s}  mode={task.mode:13s}  '
               f'robot={task.robot.get("kind", ""):12s}  task={task.task}')
-
 
 # ----------------------------------------------------------------------- paths

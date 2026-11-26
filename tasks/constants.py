@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+
 # In the host workspace the package lives at <root>/projects/robot_toolkit,
 # while a standalone clone keeps the package at <repo>/robot_toolkit/.
 REPO_ROOT = Path(__file__).resolve().parents[1]

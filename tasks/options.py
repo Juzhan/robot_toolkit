@@ -1,29 +1,9 @@
 """Task options and the parsed task configuration."""
+
 from __future__ import annotations
-
-import argparse
-import json
-import os
-import queue
-import re
-import shutil
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
-
 from ..agent.options import AgentOptions
 from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
-from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
 from .constants import DEFAULT_ROOT
 
 
@@ -38,7 +18,6 @@ class TeachOptions:
     gripper_open_time_s: float = 0.5
     gripper_ramp_hz: float = 50.0
 
-
 @dataclass
 class ReplayOptions:
     rate: float = 50.0
@@ -51,7 +30,6 @@ class ReplayOptions:
     max_joint_accel: float = 1.2
     max_joint_jerk: float = 8.0
     use_sdk_period: bool = True
-
 
 @dataclass
 class CollectOptions:
@@ -81,7 +59,6 @@ class CollectOptions:
     # (human demonstrations) using the same spool/LeRobot export pipeline.
     record_state_action: bool = True
 
-
 @dataclass
 class SessionOptions:
     """Persistent Joy-Con teach/replay loop options."""
@@ -92,7 +69,6 @@ class SessionOptions:
     replay_speed_scale: float | None = None
     auto_replay: bool = False
     voice: bool = False
-
 
 @dataclass
 class MasterSlaveOptions:
@@ -116,7 +92,6 @@ class MasterSlaveOptions:
     voice: bool = False
     leader_timeout_s: float = 0.3
 
-
 @dataclass
 class HandDemoOptions:
     """Video-only human demonstration recording.
@@ -139,7 +114,6 @@ class HandDemoOptions:
     # Reuse collect.speech (ported from ur5e_real_collect) for clip feedback.
     voice: bool = True
 
-
 @dataclass
 class SafetyOptions:
     """Human-guided safety envelope capture for any RobotBackend."""
@@ -152,7 +126,6 @@ class SafetyOptions:
     min_samples: int = 100
     freedrive: bool = True
     wait_feedback: str = ''
-
 
 @dataclass
 class TaskConfig:
@@ -175,6 +148,5 @@ class TaskConfig:
     safety: SafetyOptions = field(default_factory=SafetyOptions)
     agent: AgentOptions = field(default_factory=AgentOptions)
     source_path: str = ''
-
 
 # --------------------------------------------------------------------- config

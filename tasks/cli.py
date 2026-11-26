@@ -1,42 +1,22 @@
 """Command line entry: plan, dispatch and argument parsing."""
-from __future__ import annotations
 
+from __future__ import annotations
 import argparse
 import json
-import os
-import queue
-import re
-import shutil
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-
-from ..agent.options import AgentOptions
-from ..calibrate.options import CalibrateOptions
-from ..collect import (CameraSpec, DatasetSchema, EpisodeCollector, collect_trajectory,
-                       exporter_for)
-from ..collect.passive import sample_episodes
-from ..config import build_dataclass
 from ..core.safety_envelope import SafetyEnvelope
-from ..errors import DatasetError
-from ..runtime.profiles import build_camera_hub, build_gripper, build_robot
-from ..teach import (Replayer, KeyReader, joycon_teach, joint_motion, keyboard_teach,
-                     load_trajectory, save_trajectory, state_line, summarize)
-from ..teleop import ButtonHub
-
+from ..teach import KeyReader
 from .options import TaskConfig
-
 from .build import _build_runtime, _robot_speed
 from .calibrate import run_calibrate
 from .collect import run_collect
-from .config import (MODES, ROOT, discover_configs, load_task_config,
-                     print_configs)
+from .config import MODES, load_task_config, print_configs
 from .export import run_export
 from .hand_demo import run_hand_demo
 from .master_slave import run_master_slave
 from .replay import run_replay
-from .paths import (_collect_name, _next_name, dataset_root, lerobot_root,
-                    task_dir, trajectory_root)
+from .paths import _collect_name, _next_name, dataset_root, lerobot_root, task_dir, trajectory_root
 from .safety import run_safety
 from .session import run_session
 from .teach import run_teach
@@ -131,7 +111,6 @@ def print_plan(task: TaskConfig, mode: str, name: str | None,
         print(f'输出：{target}；最小样本 {cfg.min_samples}；关节余量 {cfg.margin_rad:g} rad')
         print('按键：s/回车保存，q 放弃')
 
-
 def run_safety(task: TaskConfig, mock: bool = False) -> int:
     """Capture a reusable safety envelope while the operator drags the arm."""
     cfg = task.safety
@@ -196,7 +175,6 @@ def run_safety(task: TaskConfig, mock: bool = False) -> int:
             except Exception:
                 pass
         robot.disconnect()
-
 
 def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
             mock: bool = False, yes: bool = False, force: bool = False,
@@ -292,7 +270,6 @@ def execute(task: TaskConfig, mode: str | None = None, name: str | None = None,
         return run_export(task, resolved)
     return 2
 
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='piper-task',
@@ -321,7 +298,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--verify-solution', help='标定任务：用指定 solution.json 采集独立验证位姿')
     parser.add_argument('--pose-plan', help='按固定的标定/验证姿态清单采样，不重新随机生成')
     return parser
-
 
 def main(argv=None) -> int:
     parser = build_parser()
@@ -362,7 +338,6 @@ def main(argv=None) -> int:
     except Exception as exc:
         print(f'任务执行失败：{type(exc).__name__}: {exc}')
         return 1
-
 
 if __name__ == '__main__':
     raise SystemExit(main())
