@@ -10,7 +10,7 @@ Pipeline per depth frame (wrist camera, metric z-depth in metres):
 
 Backends: ``numpy`` (voxel-downsampled points over a short time window in a SciPy
 k-d tree, lazy import; exact distances) and ``robokit`` (``robokit.geom.SdfVolume`` TSDF fusion with
-free-space clearing on the GPU, via ``adapters.robokit_sdf``). Only robokit
+free-space clearing on the GPU, via ``perception.robokit_sdf``). Only robokit
 remembers surfaces that later fall below the camera's minimum range.
 """
 
@@ -117,7 +117,7 @@ class DepthObstacleMap:
         self.grid = None
         self.backend = backend
         if backend == 'robokit':
-            from ..adapters.robokit_sdf import RobokitSdfMap
+            from .robokit_sdf import RobokitSdfMap
             self._sdf = RobokitSdfMap(self.bounds_min, self.bounds_max, self.voxel,
                                       depth_max=depth_max)
         elif backend != 'numpy':

@@ -12,3 +12,6 @@ from .tasks import (DEFAULT_ROOT, MODES, ROOT, TaskConfig, _JoyConKeys,  # noqa:
 __all__ = ['DEFAULT_ROOT', 'MODES', 'ROOT', 'TaskConfig', 'dataset_root',
            'execute', 'lerobot_root', 'load_task_config', 'main',
            'trajectory_root']
+
+if __name__ == '__main__':
+    raise SystemExit(main())

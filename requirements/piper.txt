@@ -1,0 +1,13 @@
+# AgileX Piper / Piper X.
+#
+# Windows (AgileX CAN module): the agx-cando plugin is installed below.
+# Linux: python-can uses socketcan; no plugin is needed.
+# macOS: python-can uses slcan; grant permission to the serial device.
+#
+# If GitHub is slow or unreachable, install the two repositories from ZIP:
+#   pip install path/to/pyAgxArm
+#   pip install path/to/python-can-agx-cando     # Windows only
+-r base.txt
+python-can>=4.0
+pyAgxArm @ git+https://github.com/agilexrobotics/pyAgxArm.git
+python-can-agx-cando @ git+https://github.com/agilexrobotics/python-can-agx-cando.git ; sys_platform == "win32"

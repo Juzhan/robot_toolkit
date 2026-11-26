@@ -49,7 +49,7 @@ def make_plan(kind, guard, start, goal, checks=(), unknown=None):
     """``kind``: 'rrt' (CPU, toolkit) or 'robokit' (GPU). ``unknown``: points only the
     planner avoids (unobserved space)."""
     if kind == 'robokit':
-        from robot_toolkit.adapters.robokit_planner import RobokitPlanner
+        from robot_toolkit.control.robokit_planner import RobokitPlanner
 
         planner = RobokitPlanner(guard, LOWER, UPPER)
         samples = planner.plan(start, goal, checks=checks, avoid_points=unknown)

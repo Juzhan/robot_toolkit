@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SHIPPED = {'robot_toolkit', 'robot_toolkit.adapters', 'robot_toolkit.calibrate',
+SHIPPED = {'robot_toolkit', 'robot_toolkit.calibrate',
            'robot_toolkit.camera', 'robot_toolkit.collect', 'robot_toolkit.control',
            'robot_toolkit.core', 'robot_toolkit.examples', 'robot_toolkit.gripper',
            'robot_toolkit.robot', 'robot_toolkit.teach', 'robot_toolkit.teleop',

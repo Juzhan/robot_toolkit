@@ -169,7 +169,7 @@ def test_self_collision_ignore_keeps_distant_pairs():
                     reason='set ROBOKIT_CUDA_TESTS=1 (robokit + CUDA) to run the planner')
 def test_robokit_planner_goes_around_a_box():
     pytest.importorskip('robokit')
-    from robot_toolkit.adapters.robokit_planner import RobokitPlanner
+    from robot_toolkit.control.robokit_planner import RobokitPlanner
     from robot_toolkit.examples.sim_depth_avoidance import position_ik
 
     guard = CollisionGuard.from_config({'obstacles': [

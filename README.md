@@ -5,8 +5,8 @@
 > 一套契约，多种后端。仿真、UR5、Piper 以及以后新增的机械臂，共用同一套
 > 遥操、示教、回放、采集、标定和数据集代码。
 
-可以独立安装使用，也可以作为现有系统的迁移目标：已有 UR 驱动代码通过
-`adapters/legacy_ur.py` 包装一层，即可接入新的示教/采集流程。
+可以独立安装使用。已有 UR 业务代码迁移时，把驱动换成 `robot.ur_rtde`
+即可复用这里的示教 / 回放 / 采集流程，不再需要额外的适配层。
 
 > **安装什么、能干什么**：核心只需 NumPy；UR 真机、Piper、RealSense、连续动作流、
 > agent 服务、LeRobot 导出等按需选装，对照表见
@@ -54,6 +54,7 @@ Agent / Python 调用的统一只读状态、能力查询与实测运动结果�
 ```text
 robot_toolkit/
 ├── __init__.py               # 公共导出 + 版本
+├── __main__.py               # python -m robot_toolkit，与 run.py 等价
 ├── run.bat / run.py          # 最直接入口：选解释器 -> task_runner（配置文件启动）
 ├── cli.py                    # 统一命令行：selftest / demo / calib-* / piper-* / doctor
 ├── task_runner.py            # 兼容入口，实现在 tasks/
@@ -75,10 +76,12 @@ robot_toolkit/
 │   ├── scene.py              # 场景估计与布局校验
 │   ├── obstacle_map.py       # 点云 -> 占据栅格
 │   ├── reconstruction.py     # 多视角重建
+│   ├── robokit_sdf.py        # robokit TSDF/ESDF -> NumPy 距离场（可选依赖）
 │   └── external_tools.py     # 外部视觉工具配置（SAM3 等）
 ├── control/
 │   ├── chunks.py             # 绝对动作块 + 本地 SequenceSource
-│   └── continuous.py         # 连续参考、共享动作时钟、跟踪/夹爪门控
+│   ├── continuous.py         # 连续参考、共享动作时钟、跟踪/夹爪门控
+│   └── robokit_planner.py    # robokit 规划器 + 本库安全校验（可选依赖）
 ├── core/
 │   ├── conventions.py        # RobotSpec / GripperSpec，7 维契约
 │   ├── mathutils.py          # 位姿/旋转/四元数/齐次变换（纯 NumPy）
@@ -133,8 +136,6 @@ robot_toolkit/
 │   ├── handeye.py            # 纯 NumPy Park-Martin AX=XB
 │   ├── session.py            # 棋盘格/机器人位姿采集 + 求解 + 保存
 │   └── store.py              # JSON 标定存储、旧配置导入/导出
-├── adapters/
-│   └── legacy_ur.py          # 包装现有 URRobot，作为迁移桥
 ├── examples/
 │   ├── mock_pipeline.py      # 完整离线链路示例
 │   ├── piper_control.py      # Piper / Piper X 真机读写示例
@@ -146,8 +147,7 @@ robot_toolkit/
 ├── PIPER.md                  # Piper SDK 安装、CAN、控制与安全
 ├── TELEOP.md                 # UR/Piper 共用遥操作分层与控制注意事项
 ├── pyproject.toml            # 打包配置；可选依赖 extras 清单见 5.0 节
-├── requirements-control.txt  # 可选：Ruckig 参考
-├── requirements-piper.txt    # 可选：Piper SDK（pyAgxArm + python-can）
+├── requirements/             # 按用途拆分的依赖清单（见 requirements/README.md）
 └── tests/                    # 纯 NumPy 测试
 ```
 
@@ -1032,9 +1032,9 @@ Piper：`RobotSpec.piper_x()` 已经提供关节/夹爪命名；真机按上面�
 
 ## 9. 接入旧代码与数据
 
-* **零侵入**：`adapters/legacy_ur.py` 把现有 `URRobot` 包装成
-  `RobotBackend`，即可用新的 `TeachRecorder` / `Replayer` / `EpisodeRecorder`，
-  无需改动旧驱动。
+* **驱动替换**：把旧 UR 驱动换成 `robot.ur_rtde.UrRtdeRobot`（同样实现
+  `RobotBackend`），即可用新的 `TeachRecorder` / `Replayer` / `EpisodeRecorder`；
+  旧驱动继续留在原工程里用，不再维护一层包装。
 * **数据兼容**：状态/动作命名、深度约定、`T_world_camera` 都与既有数据集一致；
   LeRobot 导出使用相同的 feature 结构，可直接进入 LeRobot / 扩散策略等训练流程。
 * **迁移路径**：先替换“录制/回放/导出”，再替换“机器人/夹爪/相机驱动”，

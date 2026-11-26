@@ -1,0 +1,5 @@
+# UR3 / UR5 / UR10 (CB3 and e-Series) over RTDE.
+# Prebuilt wheels exist for cp39-cp314 on Windows, Linux and macOS; no UR SDK,
+# URCap or ROS install is needed.
+-r base.txt
+ur_rtde>=1.6,<2

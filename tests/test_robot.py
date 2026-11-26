@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 
 from robot_toolkit import RobotPlatform, with_reports
-from robot_toolkit.adapters import LegacyUrRobot
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.safety.limits import JointLimits, SafetyGuard
 from robot_toolkit.errors import SafetyViolation
@@ -448,46 +447,8 @@ def test_capabilities_are_explicit():
     assert isinstance(robot.capabilities, Capabilities)
 
 
-class _FakeUr:
-    def __init__(self):
-        self.connected = True
-        self.commands = []
-        self.freedrive_state = False
-
-    def state(self):
-        return types.SimpleNamespace(timestamp=1.5, joints=[0.1, 0.2],
-                                     qd=[0.0, 0.0], tcp_pose=[0.3, 0.0, 0.2, 0, 0, 0],
-                                     protective_stop=False)
-
-    def servo_j(self, joints, dt):
-        self.commands.append((list(joints), dt))
-        return True
-
-    def servo_l(self, pose, dt):
-        return True
-
-    def move_j(self, joints, speed, accel, asynchronous):
-        self.commands.append((list(joints), 'move'))
-        return True
-
-    def servo_stop(self, deceleration):
-        return True
-
-    def freedrive(self, enabled):
-        self.freedrive_state = enabled
-        return True
 
 
-def test_legacy_ur_adapter_maps_state_and_motion():
-    fake = _FakeUr()
-    robot = LegacyUrRobot(fake)
-    state = robot.state()
-    assert np.allclose(state.q, [0.1, 0.2])
-    assert np.allclose(state.tcp, [0.3, 0.0, 0.2, 0, 0, 0])
-    assert robot.servo_j([0.3, 0.4], 0.01)
-    assert fake.commands[-1] == ([0.3, 0.4], 0.01)
-    assert robot.stop_motion(0.5)
-    assert robot.freedrive(True) and fake.freedrive_state
 
 
 def test_ur_rtde_offline_mode_behaves_like_a_robot():
@@ -530,17 +491,3 @@ def test_ur_rtde_reports_missing_sdk_gracefully():
     assert not robot.connected
 
 
-def test_legacy_collector_robot_can_be_used_as_a_backend():
-    """The migration path must work against the real (offline) legacy class."""
-    pytest.importorskip('projects.ur5e_real_collect.config')
-    from projects.ur5e_real_collect.config import RobotConfig
-    from projects.ur5e_real_collect.robot import URRobot
-
-    legacy = URRobot(RobotConfig(), mock=True)
-    robot = LegacyUrRobot(legacy).connect()
-    assert robot.connected
-    state = robot.state()
-    assert state.q.shape == (6,)
-    assert robot.servo_j([0.1] * 6, dt=0.01)
-    assert robot.freedrive(True)
-    assert robot.freedrive(False)

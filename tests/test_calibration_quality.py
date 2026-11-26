@@ -12,7 +12,7 @@ from robot_toolkit.calibrate.quality import project, solve, verify
 from robot_toolkit.core.mathutils import pose_to_matrix
 from robot_toolkit.errors import CalibrationError
 from robot_toolkit.calibrate.protocol import capture_station, finish
-from robot_toolkit.calibrate.session import BoardObservation
+from robot_toolkit.calibrate.capture import BoardObservation
 from robot_toolkit.camera.base import CameraFrame
 
 

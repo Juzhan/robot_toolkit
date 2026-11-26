@@ -60,7 +60,6 @@ piper = [
 package-dir = { "robot_toolkit" = "." }
 packages = [
     "robot_toolkit",
-    "robot_toolkit.adapters",
     "robot_toolkit.calibrate",
     "robot_toolkit.camera",
     "robot_toolkit.collect",

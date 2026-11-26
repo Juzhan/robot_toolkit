@@ -1,0 +1,4 @@
+# Exact online trajectory generation. Without it the toolkit falls back to a
+# bounded jerk-limited tracker instead of Ruckig references.
+-r base.txt
+ruckig>=0.12

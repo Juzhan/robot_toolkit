@@ -1,0 +1,2 @@
+# Core runtime: everything else is optional.
+numpy>=1.23

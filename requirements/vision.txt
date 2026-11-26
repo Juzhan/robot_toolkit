@@ -1,0 +1,4 @@
+# Calibration, ChArUco, image quality checks and pose planning.
+-r base.txt
+opencv-python>=4.8,<5
+scipy>=1.10

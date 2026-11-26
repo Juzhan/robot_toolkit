@@ -23,7 +23,7 @@ Python 3.10-3.12, from the directory that contains the `robot_toolkit` checkout:
 ```bash
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install numpy scipy "opencv-python>=4.8" ruckig pyrealsense2 pytest
-pip install -r robot_toolkit/requirements-piper.txt     # pyAgxArm + python-can (+ Windows CAN plugin)
+pip install -r robot_toolkit/requirements/piper.txt     # pyAgxArm + python-can (+ Windows CAN plugin)
 python -m pytest -q robot_toolkit/examples/piper_aruco_servo   # offline, expect all passed
 ```
 
@@ -32,7 +32,7 @@ MuJoCo (simulations), the external depth services.
 
 CAN: on Linux bring the adapter up first (`sudo ip link set can0 up type can bitrate
 1000000`); on Windows the AgileX CAN module uses `python-can-agx-cando`
-(see `requirements-piper.txt`). Plug the wrist D435 into a USB 3 port; check it with
+(see `requirements/piper.txt`). Plug the wrist D435 into a USB 3 port; check it with
 `python robot_toolkit/examples/piper_aruco_servo/run_servo.py --list-cameras`.
 
 ## Run
