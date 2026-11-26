@@ -79,7 +79,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-# Demo task configs ship with the package so `run.bat <demo>` works after install.
+# Demo task configs ship with the package so `python run.py <demo>` works after install.
 robot_toolkit = ["configs/tasks/*.json", "configs/external_tools.json",
                  "assets/audio/*.wav",
                  "third_party/joycon-robotics/joyconrobotics/*.py",

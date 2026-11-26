@@ -16,8 +16,8 @@
 最直接的用法是**按任务配置文件启动**：
 
 ```powershell
-run.bat --list                 # 列出 configs/tasks 下的任务
-run.bat piper_master_slave     # 按 JSON 里的 mode 启动
+python run.py --list                 # 列出 configs/tasks 下的任务
+python run.py piper_master_slave     # 按 JSON 里的 mode 启动
 ```
 
 跨平台等价入口是 `python run.py ...`；解释器选择与配置字段见第 5.1 节。
@@ -55,7 +55,7 @@ Agent / Python 调用的统一只读状态、能力查询与实测运动结果�
 robot_toolkit/
 ├── __init__.py               # 公共导出 + 版本
 ├── __main__.py               # python -m robot_toolkit，与 run.py 等价
-├── run.bat / run.py          # 最直接入口：选解释器 -> task_runner（配置文件启动）
+├── run.py                    # 唯一启动入口：选解释器 -> tasks（配置文件启动）
 ├── cli.py                    # 统一命令行：selftest / demo / calib-* / piper-* / doctor
 ├── task_runner.py            # 兼容入口，实现在 tasks/
 ├── tasks/                    # 每个模式一个模块
@@ -321,10 +321,10 @@ python -m robot_toolkit.cli doctor
 各后端的硬件侧准备（CAN 驱动、RTDE 网络、相机序列号、真机安全）不在 extras 里，
 分别见 `docs/piper.md`、`docs/teleop.md`、`docs/real_robot_run.md`。
 
-### 5.1 主入口：配置文件驱动（`run.bat` / `run.py`）
+### 5.1 主入口：配置文件驱动（`run.py`）
 
 真机任务都由 `configs/tasks/<name>.json` 描述（机器人、夹爪、相机、采集参数都在
-profile 里），`run.bat` 是 Windows 的薄封装，`run.py` 是跨平台等价入口。
+profile 里），`run.py` 是唯一的启动入口，Windows / macOS / Linux 通用；
 仓库自带五个可直接改的 demo 配置：
 
 | 配置 | 机器人 | 模式 |
@@ -356,9 +356,9 @@ python -c "from robot_toolkit.camera.realsense import list_devices; print(list_d
 ```
 
 ```powershell
-run.bat --list                       # 列出可用任务（工作区 + 仓库 demo）
-run.bat ur5e_session                 # UR5e：Joy-Con 常驻会话（B 示教 / X×2 回放采集）
-run.bat piper_master_slave           # Piper 主从示教：链路就绪即录，空格结束保存，q 退出
+python run.py --list                       # 列出可用任务（工作区 + 仓库 demo）
+python run.py ur5e_session                 # UR5e：Joy-Con 常驻会话（B 示教 / X×2 回放采集）
+python run.py piper_master_slave           # Piper 主从示教：链路就绪即录，空格结束保存，q 退出
 ```
 
 ```bash
@@ -385,8 +385,8 @@ python run.py ur5e_session
 CLI 的 `--auto-record` / `--sample-seconds` / `--dataset-root` / `--mock` 只是临时覆盖：
 
 ```powershell
-run.bat piper_master_slave master_slave --dry-run        # 不连硬件，只看解析结果
-run.bat piper_master_slave --mock --sample-seconds 5      # 离线跑通链路
+python run.py piper_master_slave master_slave --dry-run        # 不连硬件，只看解析结果
+python run.py piper_master_slave --mock --sample-seconds 5      # 离线跑通链路
 ```
 
 写盘说明：原始帧落在 `outputs/robot_tasks/<slug>/dataset/<会话>/take_*/`，导出成 LeRobot
@@ -399,16 +399,16 @@ run.bat piper_master_slave --mock --sample-seconds 5      # 离线跑通链路
 任务配置、按键录制、take 落盘和导出流程，只是数据集里**只有视频**：
 
 ```powershell
-run.bat hand_demo                              # 启动后按空格开始；空格保存，再按开始下一条
-run.bat hand_demo --input joycon               # 用 Joy-Con：B 开始，A 保存，- 退出
-run.bat hand_demo hand_demo --dry-run          # 不接硬件，只看解析结果
-run.bat hand_demo --mock --sample-seconds 5    # 离线跑通链路
+python run.py hand_demo                              # 启动后按空格开始；空格保存，再按开始下一条
+python run.py hand_demo --input joycon               # 用 Joy-Con：B 开始，A 保存，- 退出
+python run.py hand_demo hand_demo --dry-run          # 不接硬件，只看解析结果
+python run.py hand_demo --mock --sample-seconds 5    # 离线跑通链路
 ```
 
 按键：空格结束并保存（再按开始下一条），`x` 丢弃当前片段，`d` 删除最后一条
 （按两次确认），`q` 退出。
 语音播报默认开启（开始录制 / 第 N 条已保存 / 已丢弃 / 已删除 / 采集结束），临时关闭用
-`run.bat hand_demo --no-voice`。播报实现与旧项目一致：Windows 使用 SAPI
+`python run.py hand_demo --no-voice`。播报实现与旧项目一致：Windows 使用 SAPI
 （`comtypes`，并带蓝牙音频保持流），macOS 使用系统 `say -v Tingting`；
 Linux 没有语音引擎时回退为提示音。
 想沿用 Joy-Con 连续录很多条时，把 `hand_demo.input` 设为 `joycon`：按键与 `session`
@@ -465,7 +465,7 @@ Linux 没有语音引擎时回退为提示音。
 ```
 
 ```powershell
-run.bat piper_calibrate            # 空格=采集一帧，s=求解并保存，q=退出
+python run.py piper_calibrate            # 空格=采集一帧，s=求解并保存，q=退出
 ```
 
 - `handeye` 用从臂 `TCP`（含 `robot.options.tcp_offset`）+ 腕部相机；`intrinsics` 只采棋盘视角、不读机器人位姿；
@@ -475,7 +475,7 @@ run.bat piper_calibrate            # 空格=采集一帧，s=求解并保存，q
 **全自动扫描**（只适用于主机单独控制的一台臂；会移动机械臂，必须 `--yes`）：
 
 ```powershell
-run.bat piper_calibrate_auto --yes
+python run.py piper_calibrate_auto --yes
 ```
 
 流程：按 `pose_count` 生成位姿（或直接用 `poses` 数组）→ 逐点 `move_j` → 停 `settle_s` →
@@ -574,8 +574,8 @@ python -m robot_toolkit.examples.calibration_regression /path/ur5_calib_package_
 解释器选择（不写死任何本机路径）：
 
 1. 环境变量 `ROBOT_TOOLKIT_PYTHON`
-2. `run.bat` 同目录或上级目录的 `.robot_toolkit_python` 文件（内容为解释器路径，已 gitignore；
-   在工作区根目录放一份，仓库里的 `run.bat` 也能找到）
+2. `run.py` 同目录或上级目录的 `.robot_toolkit_python` 文件（内容为解释器路径，已 gitignore；
+   在工作区根目录放一份，仓库里的 `run.py` 也能找到）
 3. PATH 里的 `py` / `python`
 
 需要 LeRobot 导出时，把上面任一项指向装了 `lerobot` 的环境；否则把任务 JSON 的
@@ -625,7 +625,7 @@ python -m pytest tests -q
 
 真机任务由 `tasks/` 读取的任务 JSON 驱动，`robot` / `gripper` /
 `camera` 都由 profile 决定（见 `runtime/profiles.py`），业务启动器放在应用层。
-`run.bat` / `run.py` 只是把包路径和解释器选好，然后转给 `task_runner`。
+`run.py` 只是把包路径和解释器选好，然后转给 `tasks`。
 
 `demo` 会生成：
 

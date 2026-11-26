@@ -151,13 +151,13 @@ python -m robot_toolkit.examples.piper_collect `
 
 ## 用配置文件启动（推荐）
 任务配置由 `task_runner` 驱动，一个 JSON 就够。仓库外的工作区里已放好
-`configs/tasks/piper_master_slave.json`。日常直接用 `run.bat`
+`configs/tasks/piper_master_slave.json`。日常直接用 `python run.py`
 （跨平台等价 `python run.py`），它会选好解释器和包路径：
 
 ```powershell
-run.bat --list                                   # 列出任务
-run.bat piper_master_slave                       # 直接跑：链路就绪即录，空格结束保存，q 退出（不限时长）
-run.bat piper_master_slave master_slave --dry-run  # 只解析，不连硬件
+python run.py --list                                   # 列出任务
+python run.py piper_master_slave                       # 直接跑：链路就绪即录，空格结束保存，q 退出（不限时长）
+python run.py piper_master_slave master_slave --dry-run  # 只解析，不连硬件
 ```
 
 默认和 UR5 的 `collect` 一样，是**一条命令就开录**：链路就绪后立即录制，按空格结束并保存
@@ -170,10 +170,10 @@ run.bat piper_master_slave master_slave --dry-run  # 只解析，不连硬件
 | `collect.max_frames` | `0` | `0` = 单条 episode 不限帧数 |
 | `collect.compress` | `false` | spool 的 `.npz` 帧是否压缩。默认原始帧（~1.5 MB/帧、~3 ms/帧）；压缩只省约 5% 空间却慢 ~20 倍，30 Hz 会「write queue is full」中断 |
 
-`run.bat` 的解释器优先级：`ROBOT_TOOLKIT_PYTHON` → 同目录或上级目录的
+`run.py` 的解释器优先级：`ROBOT_TOOLKIT_PYTHON` → 同目录或上级目录的
 `.robot_toolkit_python` 文件 → PATH 里的 `py`/`python`。要用 LeRobot 导出就指向装了
 `lerobot` 的环境。在工作区根目录放一份 `.robot_toolkit_python`，工作区根目录和仓库里的
-`run.bat` 都能用到。
+`run.py` 都能用到。
 等价的模块命令是 `python -m robot_toolkit.task_runner <task> [mode]`。
 
 关键字段：
@@ -217,7 +217,7 @@ run.bat piper_master_slave master_slave --dry-run  # 只解析，不连硬件
 仓库自带 `configs/tasks/piper_calibrate.json`，`mode` 是 `calibrate`：
 
 ```powershell
-run.bat piper_calibrate      # 空格=采集一帧，s=求解并保存，q=退出
+python run.py piper_calibrate      # 空格=采集一帧，s=求解并保存，q=退出
 ```
 
 ```json
@@ -242,7 +242,7 @@ run.bat piper_calibrate      # 空格=采集一帧，s=求解并保存，q=退�
 需要**全自动扫描**时用 `configs/tasks/piper_calibrate_auto.json`（单臂、主机可控，会移动机械臂）：
 
 ```powershell
-run.bat piper_calibrate_auto --yes
+python run.py piper_calibrate_auto --yes
 ```
 
 逐点 `move_j` → 停 `settle_s` → 检测棋盘 → 攒够样本自动求解；检测失败的位姿自动跳过。
@@ -470,29 +470,29 @@ python -m robot_toolkit.examples.piper_collect --source teleop --cameras-json ca
 
 ## 按任务 JSON 启动
 
-`task_runner.py` 读取任务 JSON：`robot` 决定用 Piper、UR5e、MuJoCo 还是 mock，
+`tasks/` 读取任务 JSON：`robot` 决定用 Piper、UR5e、MuJoCo 还是 mock，
 `gripper` 决定夹爪后端；入口本身不判断机器人。任务 JSON 放在应用层，用
 `--config <path>` 直接指定（或用 `ROBOT_TASK_CONFIG_DIR` 指定配置目录后按任务名
-查找）。下面的 `python -m robot_toolkit.task_runner` 都可以换成更短的
-`run.bat`（Linux/macOS 用 `python run.py`），参数完全一致：
+查找）。下面的命令也可以写成 `python -m robot_toolkit` 或 `python run.py`，
+三者参数完全一致：
 
 ```powershell
 # 列出可用任务
-run.bat --list
+python run.py --list
 
 # 只看解析结果，不接硬件、不动机器人
-run.bat --config task.json --dry-run
+python run.py --config task.json --dry-run
 
 # 推荐：常驻 Joy-Con 会话
 # B 开始示教 / A 保存 / ZR 切夹爪 / X×2 回放并采集 / Y×2 删除上一条
-run.bat --config task.json session
+python run.py --config task.json session
 
 # 单次调试命令（不使用常驻会话）
-run.bat --config task.json teach
-run.bat --config task.json collect
+python run.py --config task.json teach
+python run.py --config task.json collect
 
 # 不接硬件跑通整个流程
-run.bat --config task.json collect --mock --yes
+python run.py --config task.json collect --mock --yes
 ```
 
 任务 JSON 不需要按操作系统分支，跨平台差异已经收在 CAN / 串口 / 相机适配器里。

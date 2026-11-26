@@ -306,7 +306,7 @@ def main(argv=None) -> int:
         print_configs()
         return 0
     if args.config and args.task in MODES and args.action is None:
-        # ``run.bat --config task.json collect``: the first positional is
+        # ``python run.py --config task.json collect``: the first positional is
         # the action, not a task name.
         args.action, args.task = args.task, None
     if not args.task and not args.config:
