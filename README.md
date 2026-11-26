@@ -143,8 +143,7 @@ robot_toolkit/
 │   ├── piper_collect.py      # Piper 主从示教被动采样 / 遥控 / 轨迹 -> 数据集
 │   └── joycon_teleop.py      # 同一 Joy-Con 栈驱动 UR5e / Piper X
 ├── assets/                   # 可打印的 ChArUco 标定板（PDF / PNG）
-├── PIPER.md                  # Piper SDK 安装、CAN、控制与安全
-├── TELEOP.md                 # UR/Piper 共用遥操作分层与控制注意事项
+├── docs/                     # 手册：piper.md、teleop.md、real_robot_run.md、motion_speed.md 等
 ├── pyproject.toml            # 打包配置；可选依赖 extras 清单见 5.0 节
 ├── requirements/             # 按用途拆分的依赖清单（见 requirements/README.md）
 └── tests/                    # 纯 NumPy 测试
@@ -299,7 +298,7 @@ python -m pip install "hidapi>=0.14" "PyGLM>=2.7"                   # joycon
 python -m pip install "comtypes>=1.2"                                # voice（仅 Windows）
 python -m pip install "pytest>=7"                                   # dev
 
-# Piper 与宿主 IK 只能从源码装，见 PIPER.md 和 robot/ik.py 的说明
+# Piper 与宿主 IK 只能从源码装，见 docs/piper.md 和 robot/ik.py 的说明
 python -m pip install "python-can>=4.0"
 python -m pip install "git+https://github.com/agilexrobotics/pyAgxArm.git"
 python -m pip install "git+https://github.com/agilexrobotics/python-can-agx-cando.git"
@@ -320,7 +319,7 @@ python -m robot_toolkit.cli doctor
 ```
 
 各后端的硬件侧准备（CAN 驱动、RTDE 网络、相机序列号、真机安全）不在 extras 里，
-分别见 `PIPER.md`、`docs/real_robot_run.md`、`TELEOP.md`。
+分别见 `docs/piper.md`、`docs/teleop.md`、`docs/real_robot_run.md`。
 
 ### 5.1 主入口：配置文件驱动（`run.bat` / `run.py`）
 
@@ -608,7 +607,7 @@ python -m robot_toolkit.cli piper-linkage --role follower --yes
 # 主从示教直接采样（只读，不发送任何报文；空格=开始/结束一条 episode）
 python -m robot_toolkit.examples.piper_collect --source master-slave --fps 15
 
-# Piper X 控制示例（需要 --yes；安装/CAN/固件详见 PIPER.md）
+# Piper X 控制示例（需要 --yes；安装/CAN/固件详见 docs/piper.md）
 python -m robot_toolkit.examples.piper_control --enable
 
 # Piper X 键盘拖动示教（无相机；空格切换夹爪，s 保存）

@@ -90,7 +90,7 @@ robot = build_robot({
 - 步长断言改为默认速度乘以 `0.01`，不再写死 `0.015`。
 - 显式覆盖测试保留 `max_velocity=0.4`，并补充 `symmetric()` 显式覆盖检查。
 
-### 5. `robot_toolkit/PIPER.md`
+### 5. `robot_toolkit/docs/piper.md`
 
 位置：原生速度设置示例附近的安全阈值说明。
 将固定的 `1.5 rad/s`、`0.015 rad` 默认描述改为引用
