@@ -9,7 +9,7 @@
 | --- | --- | --- |
 | `ur5e_real_collect/config.py` | `config.py`, `runtime/profiles.py` | 通用 JSON + dataclass 配置；机器人/夹爪/相机用 profile 构建 |
 | `ur5e_real_collect/robot.py` | `robot/ur_rtde.py` | 同一套 RTDE 逻辑，多一个统一接口；`mock=True` 可直接离线跑 |
-| `ur5e_real_collect/robot.py`（旧代码直接复用） | `adapters/legacy_ur.py` | 不改旧驱动，包一层即可接入新流程 |
+| `ur5e_real_collect/robot.py` | `robot/ur_rtde.py` | 用同一 `RobotBackend` 契约的 UR RTDE 驱动替换旧驱动 |
 | `ur5e_real_collect/gripper.py` | `gripper/robotiq.py` | 宽度统一为米；mock / URScript / URCap / Modbus 后端保留 |
 | `ur5e_real_collect/cameras.py` | `camera/*` | RealSense / OpenCV / Mock + `CameraHub` 同步与过期检测 |
 | `ur5e_real_collect/trajectory.py` | `teach/trajectory.py` | 轨迹格式、平滑、重采样、停顿检测、夹爪事件完全对齐 |

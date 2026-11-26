@@ -276,6 +276,15 @@ pip install "robot-toolkit[ur,cameras,server]"
 extras 是 pip 的能力，必须伴随安装本包；如果完全不想安装本包，直接装第三方依赖
 也一样能跑。按需逐项安装（与上面的表格一一对应）：
 
+按用途装也可以直接用 `requirements/` 下的清单（与 extras 一一对应，见
+[requirements/README.md](./requirements/README.md)）：
+
+```bash
+pip install -r requirements/ur5.txt        # UR5 真机
+pip install -r requirements/sim.txt        # MuJoCo 仿真
+pip install -r requirements/piper.txt      # Piper
+```
+
 ```powershell
 python -m pip install numpy                                        # 核心，必需
 python -m pip install "opencv-python>=4.8,<5" "scipy>=1.10"         # vision
