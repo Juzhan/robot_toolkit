@@ -485,7 +485,7 @@ class ServoStream(threading.Thread):
 
     def __init__(self, robot, q0, rate_hz, speed, accel, jerk, lower, upper,
                  collision=None, collision_clearance=0.):
-        from robot_toolkit.core.continuous import ContinuousReference
+        from robot_toolkit.core.reference import ContinuousReference
 
         super().__init__(daemon=True, name='piper-servo')
         self.robot = robot

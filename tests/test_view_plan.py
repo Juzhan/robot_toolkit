@@ -8,7 +8,7 @@ import numpy as np
 from robot_toolkit.calibrate.view_plan import generate, load_plan, predict
 from robot_toolkit.calibrate.quality import write_json
 from robot_toolkit.core.mathutils import pose_to_matrix
-from robot_toolkit.core.safety import JointLimits
+from robot_toolkit.safety.limits import JointLimits
 from robot_toolkit.core.workspace_guard import WorkspaceGuard
 from robot_toolkit.errors import CalibrationError
 

@@ -6,7 +6,7 @@ import pytest
 
 from robot_toolkit.core.collision import (Box, CollisionGuard, Plane, PointCloud, Sphere,
                                           SphereRobot, UrdfChain, box_spheres, d435_spheres)
-from robot_toolkit.core.safety import JointLimits, SafetyGuard
+from robot_toolkit.safety.limits import JointLimits, SafetyGuard
 from robot_toolkit.errors import SafetyViolation
 from robot_toolkit.robot.mock import MockRobot
 from robot_toolkit.robot.safety import SafeRobot

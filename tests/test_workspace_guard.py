@@ -2,7 +2,7 @@ import unittest
 import numpy as np
 
 from robot_toolkit.core.workspace_guard import WorkspaceGuard
-from robot_toolkit.core.safety import SafetyGuard, JointLimits
+from robot_toolkit.safety.limits import SafetyGuard, JointLimits
 from robot_toolkit.errors import SafetyViolation
 from robot_toolkit.robot.safety import SafeRobot
 from robot_toolkit.robot.base import RobotState

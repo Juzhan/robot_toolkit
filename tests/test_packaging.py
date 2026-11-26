@@ -10,7 +10,7 @@ SHIPPED = {'robot_toolkit', 'robot_toolkit.adapters', 'robot_toolkit.calibrate',
            'robot_toolkit.robot', 'robot_toolkit.teach', 'robot_toolkit.teleop',
            'robot_toolkit.agent', 'robot_toolkit.agent_rpc',
            'robot_toolkit.tasks', 'robot_toolkit.runtime',
-           'robot_toolkit.perception'}
+           'robot_toolkit.perception', 'robot_toolkit.safety'}
 
 
 def _declared() -> set:

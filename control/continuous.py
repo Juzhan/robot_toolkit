@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core.continuous import (ContinuousReference, gripper_allowed,
+from ..core.reference import (ContinuousReference, gripper_allowed,
                                progress_allowed)
 from .chunks import ActionChunk, ChunkSource
 from .stream import ServoStream, StreamLimits, ensure_servo  # noqa: F401 (re-export)

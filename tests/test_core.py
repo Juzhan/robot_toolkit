@@ -14,7 +14,7 @@ from robot_toolkit.core.mathutils import (
     matrix_to_pose, matrix_to_quat, orthonormalize, pose_error,
     pose_to_matrix, quat_to_matrix, rotvec_to_matrix, transform_points)
 from robot_toolkit.core.rate import Rate
-from robot_toolkit.core.safety import (JointLimits, SafetyGuard, Watchdog,
+from robot_toolkit.safety.limits import (JointLimits, SafetyGuard, Watchdog,
                                        WorkspaceBox)
 from robot_toolkit.errors import SafetyViolation
 

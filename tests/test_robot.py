@@ -11,7 +11,7 @@ import pytest
 from robot_toolkit import RobotPlatform, with_reports
 from robot_toolkit.adapters import LegacyUrRobot
 from robot_toolkit.core.conventions import RobotSpec
-from robot_toolkit.core.safety import JointLimits, SafetyGuard
+from robot_toolkit.safety.limits import JointLimits, SafetyGuard
 from robot_toolkit.errors import SafetyViolation
 from robot_toolkit.runtime.profiles import build_robot
 from robot_toolkit.robot import MockRobot, SafeRobot, UrRtdeConfig, UrRtdeRobot

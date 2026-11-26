@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..core.continuous import ContinuousReference
+from ..core.reference import ContinuousReference
 from ..control.stream import ServoStream, StreamAbort
 from ..errors import Aborted, RobotUnavailable, SafetyViolation
 from ..robot.base import RobotBackend

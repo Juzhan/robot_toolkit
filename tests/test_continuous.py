@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from robot_toolkit.control import (ContinuousConfig, SequenceSource,
                                    run_continuous_stream)
 from robot_toolkit.control import stream as servo_module
-from robot_toolkit.core.continuous import ContinuousReference
-from robot_toolkit.core import continuous as reference_module
+from robot_toolkit.core.reference import ContinuousReference
+from robot_toolkit.core import reference as reference_module
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.gripper import MockGripper
 from robot_toolkit.robot import MockRobot

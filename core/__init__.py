@@ -1,6 +1,6 @@
 """Robot-agnostic primitives: poses, conventions, safety, rate control, config."""
 
-from .continuous import (ContinuousReference, ContinuousReferenceInfo, gripper_allowed,
+from .reference import (ContinuousReference, ContinuousReferenceInfo, gripper_allowed,
                          progress_allowed)
 from .conventions import (
     CAMERA_FRAME_CONVENTION,
@@ -25,8 +25,8 @@ from .mathutils import (
     transform_points,
 )
 from .rate import Rate
-from .safety import JointLimits, SafetyGuard, WorkspaceBox
-from .safety_envelope import SafetyEnvelope
+from ..safety.limits import JointLimits, SafetyGuard, WorkspaceBox
+from ..safety.envelope import SafetyEnvelope
 
 __all__ = [
     'ContinuousReference',

@@ -1,7 +1,7 @@
 """TCP box and sampled joint-path checks, independent of robot hardware."""
 import numpy as np
 
-from .safety import WorkspaceBox
+from ..safety.limits import WorkspaceBox
 from ..errors import SafetyViolation
 
 

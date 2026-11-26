@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..core.safety import SafetyGuard
+from ..safety.limits import SafetyGuard
 from ..errors import NotSupported, SafetyViolation
 from .base import RobotBackend, RobotState
 

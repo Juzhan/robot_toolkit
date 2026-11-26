@@ -17,7 +17,7 @@ from PIL import Image
 
 from robot_toolkit.runtime import profiles
 from robot_toolkit.core.conventions import RobotSpec
-from robot_toolkit.core.safety import JointLimits, SafetyGuard
+from robot_toolkit.safety.limits import JointLimits, SafetyGuard
 from robot_toolkit.robot.mujoco import MujocoRobot
 from robot_toolkit.robot.safety import SafeRobot
 

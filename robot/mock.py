@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 from ..core.conventions import RobotSpec
-from ..core.safety import JointLimits
+from ..safety.limits import JointLimits
 from ..errors import NotSupported
 from .base import Capabilities, RobotBackend, RobotState
 

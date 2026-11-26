@@ -5,7 +5,7 @@ import json
 import time
 from pathlib import Path
 from ..calibrate.options import CalibrateOptions
-from ..core.safety_envelope import SafetyEnvelope
+from ..safety.envelope import SafetyEnvelope
 from ..teach import KeyReader
 from .options import TaskConfig
 from .paths import task_dir

@@ -76,6 +76,7 @@ packages = [
     "robot_toolkit.tasks",
     "robot_toolkit.runtime",
     "robot_toolkit.perception",
+    "robot_toolkit.safety",
 ]
 
 [tool.setuptools.package-data]

@@ -12,7 +12,7 @@ import pytest
 from robot_toolkit import RobotPlatform, with_reports
 from robot_toolkit.core.conventions import RobotSpec
 from robot_toolkit.core.mathutils import euler_to_matrix, rotvec_to_matrix
-from robot_toolkit.core.safety import JointLimits, SafetyGuard
+from robot_toolkit.safety.limits import JointLimits, SafetyGuard
 from robot_toolkit.errors import ConnectionFailed, NotSupported
 from robot_toolkit.runtime.profiles import build_gripper, build_robot
 from robot_toolkit.robot import (AgxPiperConfig, AgxPiperRobot, SafeRobot,

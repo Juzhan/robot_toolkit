@@ -23,7 +23,7 @@ import numpy as np
 
 from robot_toolkit.core.collision import Box, CollisionGuard, Plane, d435_spheres
 from robot_toolkit.control.guarded import CollisionBrake
-from robot_toolkit.core.continuous import ContinuousReference
+from robot_toolkit.core.reference import ContinuousReference
 from robot_toolkit.errors import SafetyViolation
 from robot_toolkit.perception.obstacle_map import DepthObstacleMap
 

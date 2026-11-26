@@ -82,8 +82,7 @@ robot_toolkit/
 ├── core/
 │   ├── conventions.py        # RobotSpec / GripperSpec，7 维契约
 │   ├── mathutils.py          # 位姿/旋转/四元数/齐次变换（纯 NumPy）
-│   ├── continuous.py         # 连续运动要求 Ruckig；旧回退仅供显式离线实验
-│   ├── safety.py             # JointLimits / SafetyGuard / WorkspaceBox / Watchdog
+│   ├── reference.py          # 连续运动参考生成（Ruckig；旧回退仅供离线实验）
 │   └── rate.py               # 定频循环 + 超时统计
 ├── robot/
 │   ├── base.py               # RobotBackend / RobotState / Capabilities
@@ -92,6 +91,9 @@ robot_toolkit/
 │   ├── ur_rtde.py            # UR3/UR5/UR10（CB3 & e-Series）
 │   ├── agx_piper.py          # AgileX Piper / Piper X（pyAgxArm）
 │   └── safety.py             # SafeRobot 装饰器
+├── safety/
+│   ├── limits.py             # JointLimits / SafetyGuard / WorkspaceBox / Watchdog
+│   └── envelope.py           # 人工引导录制并回放的安全包络
 ├── gripper/
 │   ├── base.py               # GripperBackend（统一用米）
 │   ├── mock.py               # 有限速度的 MockGripper

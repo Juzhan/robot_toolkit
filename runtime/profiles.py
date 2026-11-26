@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from ..camera import Camera, CameraHub, MockCamera, OpenCVCamera, RealSenseCamera
 from ..core.conventions import GripperSpec, RobotSpec
-from ..core.safety import JointLimits, SafetyGuard, WorkspaceBox
+from ..safety.limits import JointLimits, SafetyGuard, WorkspaceBox
 from ..errors import ConfigurationError
 from ..gripper import AgxGripper, GripperBackend, MockGripper, RobotiqConfig, RobotiqGripper
 from ..robot import (AgxPiperConfig, AgxPiperRobot, MockRobot, SafeRobot,
@@ -85,7 +85,7 @@ def build_robot(profile: RobotProfile | dict | str = 'mock', mock: bool | None =
         settings = profile.limits.get('workspace')
         if settings:
             from ..core.workspace_guard import WorkspaceGuard
-            from ..core.safety_envelope import SafetyEnvelope
+            from ..safety.envelope import SafetyEnvelope
             if settings.get('envelope_path'):
                 envelope = SafetyEnvelope.load(settings['envelope_path'])
                 lower, upper = envelope.tcp_lower[:3], envelope.tcp_upper[:3]

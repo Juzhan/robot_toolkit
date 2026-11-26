@@ -6,8 +6,8 @@ from unittest.mock import patch
 import numpy as np
 
 from robot_toolkit.calibrate.identity import calibration_identity
-from robot_toolkit.core.safety import JointLimits, SafetyGuard
-from robot_toolkit.core.safety_envelope import SafetyEnvelope
+from robot_toolkit.safety.limits import JointLimits, SafetyGuard
+from robot_toolkit.safety.envelope import SafetyEnvelope
 from robot_toolkit.errors import NotSupported, Aborted
 from robot_toolkit.robot.agx_piper import AgxPiperRobot, AgxPiperConfig
 from robot_toolkit.robot.mock import MockRobot

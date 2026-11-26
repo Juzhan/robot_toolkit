@@ -22,7 +22,7 @@
 以下文件已与 `robot_toolkit_clean_20261023_192116.tar.gz` 比较。
 若对方使用该包，只需按本节修改，不必重新同步整套运动实现。
 
-### 1. `robot_toolkit/core/safety.py`
+### 1. `robot_toolkit/safety/limits.py`
 
 位置：`JointLimits` 类。
 
